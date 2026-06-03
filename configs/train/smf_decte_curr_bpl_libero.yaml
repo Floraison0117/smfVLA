@@ -1,0 +1,88 @@
+# SMF-DecTE-Curr-BPL 训练配置
+# DecTE + Curriculum + Behavioral Perceptual Loss
+
+method: smf_decte_curr_bpl
+description: "DecTE + Curriculum + BPL: layers 12+16, alpha warmup 4.5K-10.5K"
+
+# ── 模型 ─────────────────────────────────────────────────
+checkpoint: /root/autodl-tmp/smfVLA/checkpoints/base/pi05_libero
+pi05: true
+action_dim: 32
+action_horizon: 10
+
+# ── SMF 参数 ─────────────────────────────────────────────
+flow_ratio: 0.5
+time_conditioning: decte
+encoder_depth: 6
+
+# ── Curriculum ───────────────────────────────────────────
+use_curriculum: true
+delta_min: 0.05
+delta_final: 1.0
+delta_floor: 0.001
+
+# ── BPL ──────────────────────────────────────────────────
+use_bpl: true
+bpl_warmup_start: 4500      # 0-4.5K: alpha=0
+bpl_warmup_end: 10500       # 4.5K-10.5K: 0→0.05
+bpl_alpha_max: 0.05         # 10.5K-15K: 0.05
+bpl_layer_indices: [12, 16]
+bpl_layer_weights: [0.5, 1.0]
+
+# ── 训练超参 ─────────────────────────────────────────────
+learning_rate: 3.0e-5
+weight_decay: 0.01
+warmup_ratio: 0.03
+gradient_clipping: 1.0
+batch_size: 32
+training_steps: 15000
+precision: bf16
+
+# ── 优化器 ───────────────────────────────────────────────
+optimizer: AdamW
+ema_decay: null
+
+# ── 数据 ─────────────────────────────────────────────────
+dataset: libero
+dataset_path: /root/autodl-tmp/smfVLA/data/libero
+
+# ── 保存 ─────────────────────────────────────────────────
+checkpoint_dir: /root/autodl-tmp/smfVLA/checkpoints/finetuned/smf_decte_curr_bpl
+log_dir: /root/autodl-tmp/smfVLA/logs/train/smf_decte_curr_bpl
+save_every: 3000
+log_every: 100
+
+# ── WandB ────────────────────────────────────────────────
+wandb:
+  project: smfvla
+  run_name: null
+
+# ── 方法开关 ─────────────────────────────────────────────
+use_anchor: false
+
+# ── 冻结策略 ─────────────────────────────────────────────
+freeze:
+  - "PaliGemma/img/**"
+  - "PaliGemma/llm/embedder/**"
+  - "PaliGemma/llm/final_norm/scale"
+  - "PaliGemma/llm/layers/attn/q_einsum/w"
+  - "PaliGemma/llm/layers/attn/kv_einsum/w"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
+  - "PaliGemma/llm/layers/mlp/gating_einsum"
+  - "PaliGemma/llm/layers/mlp/linear"
+  - "PaliGemma/llm/layers/pre_attention_norm/scale"
+  - "PaliGemma/llm/layers/pre_ffw_norm/scale"
+
+trainable:
+  - "PaliGemma/llm/layers/attn/q_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
+  - "PaliGemma/llm/layers/mlp_1/**"
+  - "PaliGemma/llm/layers/pre_attention_norm_1/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
+  - "PaliGemma/llm/final_norm_1/**"
+  - "action_in_proj/**"
+  - "action_out_proj/**"
+  - "time_mlp_in/**"
+  - "time_mlp_out/**"
+  - "time_proj/**"
