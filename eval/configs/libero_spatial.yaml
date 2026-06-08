@@ -1,0 +1,16 @@
+# libero_spatial 评估配置
+# 用法: bash scripts/eval.sh libero_spatial
+
+task_suite_name: libero_spatial
+num_trials_per_task: 50
+replan_steps: 5
+resize_size: 224
+num_steps_wait: 10
+seed: 7
+
+# max_steps 按 task suite 设置（最长训练 demo + buffer）
+max_steps: 220
+
+# server 配置
+host: localhost
+port: 8000

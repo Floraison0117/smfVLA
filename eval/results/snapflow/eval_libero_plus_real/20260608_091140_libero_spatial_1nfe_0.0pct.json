@@ -1,0 +1,131 @@
+{
+  "overall": {
+    "total_success_rate": 0.0,
+    "total_episodes": 0,
+    "total_successes": 0
+  },
+  "config": {
+    "benchmark": "libero-plus-perturbation",
+    "task_suite": "libero_spatial",
+    "nfe": 1,
+    "max_tasks": 5,
+    "task_offset": 0,
+    "replan_steps": 5,
+    "num_steps_wait": 10,
+    "seed": 7,
+    "checkpoint_path": "checkpoints/finetuned/snapflow/step_30000",
+    "action_horizon": 10
+  },
+  "per_task": {
+    "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_1": {
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_1",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 1",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "success": 0,
+      "total": 1
+    },
+    "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_10": {
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_10",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 10",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "success": 0,
+      "total": 1
+    },
+    "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_12": {
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_12",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 12",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "success": 0,
+      "total": 1
+    },
+    "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_13": {
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_13",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 13",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "success": 0,
+      "total": 1
+    },
+    "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_14": {
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_14",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 14",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "success": 0,
+      "total": 1
+    }
+  },
+  "timing": {
+    "all_latencies_ms": [],
+    "avg_latency_ms": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "p99_latency_ms": 0.0
+  },
+  "episode_details": [
+    {
+      "task_id": 1,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_1",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 1",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "success": false,
+      "steps": 0,
+      "error": "'OffScreenRenderEnv' object has no attribute 'get_init_state'"
+    },
+    {
+      "task_id": 2,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_10",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 10",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "success": false,
+      "steps": 0,
+      "error": "'OffScreenRenderEnv' object has no attribute 'get_init_state'"
+    },
+    {
+      "task_id": 3,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_12",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 12",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "success": false,
+      "steps": 0,
+      "error": "'OffScreenRenderEnv' object has no attribute 'get_init_state'"
+    },
+    {
+      "task_id": 4,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_13",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 13",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "success": false,
+      "steps": 0,
+      "error": "'OffScreenRenderEnv' object has no attribute 'get_init_state'"
+    },
+    {
+      "task_id": 5,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_14",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 14",
+      "perturbation": "background_textures",
+      "category": "Background Textures",
+      "difficulty": 1,
+      "success": false,
+      "steps": 0,
+      "error": "'OffScreenRenderEnv' object has no attribute 'get_init_state'"
+    }
+  ],
+  "metadata": {
+    "start_time": "2026-06-08T09:11:32.685302",
+    "end_time": "2026-06-08T09:11:40.399942",
+    "duration_seconds": 7.7,
+    "hostname": "autodl-container-lezfbu0bdx-2f5bc1be"
+  }
+}

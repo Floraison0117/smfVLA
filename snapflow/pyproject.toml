@@ -1,0 +1,35 @@
+[project]
+name = "snapflow"
+version = "0.1.0"
+description = "SnapFlow: 1-NFE Action Generation for Flow-Matching VLAs"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "jax>=0.4.0",
+    "flax>=0.7.0",
+    "optax>=0.1.0",
+    "orbax>=0.1.0",
+    "wandb>=0.15.0",
+    "lerobot>=0.1.0",
+    "numpy>=1.24.0",
+    "pillow>=9.0.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F"]
+ignore = ["E501"]

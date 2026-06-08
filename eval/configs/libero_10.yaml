@@ -1,0 +1,10 @@
+# libero_10 评估配置
+task_suite_name: libero_10
+num_trials_per_task: 50
+replan_steps: 5
+resize_size: 224
+num_steps_wait: 10
+seed: 7
+max_steps: 520
+host: localhost
+port: 8000

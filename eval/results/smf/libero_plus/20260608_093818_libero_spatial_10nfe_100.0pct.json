@@ -1,0 +1,460 @@
+{
+  "overall": {
+    "total_success_rate": 1.0,
+    "total_episodes": 10,
+    "total_successes": 10
+  },
+  "config": {
+    "benchmark": "libero-plus",
+    "task_suite": "libero_spatial",
+    "nfe": 10,
+    "max_tasks": 50,
+    "task_offset": 0,
+    "replan_steps": 5,
+    "num_steps_wait": 10,
+    "seed": 7,
+    "checkpoint_path": "checkpoints/base/pi05_libero",
+    "action_horizon": 10
+  },
+  "per_task": {
+    "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl": {
+      "task_id": 0,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate.bddl": {
+      "task_id": 1,
+      "task_name": "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl next to the ramekin and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate.bddl": {
+      "task_id": 2,
+      "task_name": "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl from table center and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_on_the_cookie_box_and_place_it_on_the_plate.bddl": {
+      "task_id": 3,
+      "task_name": "pick_up_the_black_bowl_on_the_cookie_box_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl on the cookie box and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_in_the_top_drawer_of_the_wooden_cabinet_and_place_it_on_the_plate.bddl": {
+      "task_id": 4,
+      "task_name": "pick_up_the_black_bowl_in_the_top_drawer_of_the_wooden_cabinet_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_on_the_ramekin_and_place_it_on_the_plate.bddl": {
+      "task_id": 5,
+      "task_name": "pick_up_the_black_bowl_on_the_ramekin_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl on the ramekin and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate.bddl": {
+      "task_id": 6,
+      "task_name": "pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl next to the cookie box and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_on_the_stove_and_place_it_on_the_plate.bddl": {
+      "task_id": 7,
+      "task_name": "pick_up_the_black_bowl_on_the_stove_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl on the stove and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_next_to_the_plate_and_place_it_on_the_plate.bddl": {
+      "task_id": 8,
+      "task_name": "pick_up_the_black_bowl_next_to_the_plate_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl next to the plate and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    },
+    "pick_up_the_black_bowl_on_the_wooden_cabinet_and_place_it_on_the_plate.bddl": {
+      "task_id": 9,
+      "task_name": "pick_up_the_black_bowl_on_the_wooden_cabinet_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl on the wooden cabinet and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": 1
+    }
+  },
+  "timing": {
+    "all_latencies_ms": [
+      5574.16,
+      56.67,
+      55.66,
+      55.0,
+      57.42,
+      55.35,
+      55.23,
+      55.06,
+      55.1,
+      55.56,
+      55.75,
+      55.39,
+      57.07,
+      56.18,
+      55.23,
+      55.41,
+      55.7,
+      55.69,
+      55.62,
+      55.9,
+      55.96,
+      56.86,
+      55.8,
+      55.49,
+      55.51,
+      56.39,
+      55.48,
+      55.89,
+      56.14,
+      55.57,
+      55.04,
+      55.26,
+      55.53,
+      55.64,
+      55.86,
+      55.66,
+      55.0,
+      55.63,
+      55.66,
+      55.64,
+      55.41,
+      55.52,
+      55.42,
+      55.32,
+      56.41,
+      56.04,
+      55.57,
+      55.91,
+      55.69,
+      55.16,
+      55.13,
+      55.25,
+      54.95,
+      55.26,
+      55.17,
+      55.54,
+      55.4,
+      55.88,
+      55.68,
+      55.19,
+      54.98,
+      55.29,
+      55.94,
+      55.08,
+      55.58,
+      55.05,
+      54.97,
+      55.32,
+      54.96,
+      55.16,
+      56.71,
+      56.06,
+      55.69,
+      55.99,
+      55.94,
+      55.37,
+      55.8,
+      55.04,
+      54.96,
+      54.94,
+      55.16,
+      55.04,
+      55.27,
+      54.92,
+      55.42,
+      55.35,
+      55.84,
+      55.35,
+      56.14,
+      55.28,
+      54.99,
+      55.36,
+      55.32,
+      56.0,
+      55.65,
+      55.52,
+      55.22,
+      54.89,
+      55.19,
+      55.86,
+      55.19,
+      56.55,
+      55.78,
+      55.78,
+      55.37,
+      55.56,
+      55.17,
+      55.25,
+      55.0,
+      55.0,
+      55.84,
+      55.68,
+      55.49,
+      54.9,
+      55.52,
+      56.77,
+      55.81,
+      55.29,
+      55.66,
+      55.33,
+      55.22,
+      55.29,
+      55.13,
+      55.25,
+      55.21,
+      55.45,
+      55.41,
+      54.89,
+      54.94,
+      55.07,
+      55.07,
+      55.9,
+      55.19,
+      57.3,
+      55.66,
+      55.79,
+      56.19,
+      55.21,
+      55.27,
+      55.3,
+      55.11,
+      55.57,
+      55.81,
+      55.46,
+      55.2,
+      55.38,
+      55.2,
+      55.14,
+      55.08,
+      55.46,
+      55.47,
+      55.4,
+      55.09,
+      55.31,
+      54.96,
+      57.22,
+      56.27,
+      55.35,
+      56.38,
+      55.43,
+      55.37,
+      55.78,
+      55.04,
+      55.71,
+      56.09,
+      55.54,
+      55.86,
+      55.57,
+      55.57,
+      55.1,
+      55.01,
+      55.32,
+      55.47,
+      55.31,
+      55.08,
+      55.06,
+      55.11,
+      55.22,
+      55.17,
+      57.12,
+      57.02,
+      56.53,
+      56.46,
+      55.77,
+      55.35,
+      56.01,
+      55.77,
+      55.78,
+      55.74,
+      55.85,
+      55.64,
+      55.39,
+      55.83,
+      55.95,
+      55.56,
+      56.16,
+      55.56,
+      55.23,
+      55.61,
+      55.78,
+      57.15,
+      56.5,
+      55.64,
+      55.76,
+      55.95,
+      55.47,
+      55.52,
+      55.77,
+      55.44,
+      55.02,
+      55.59,
+      56.21,
+      55.61,
+      55.18,
+      55.43,
+      55.81,
+      55.34,
+      56.06,
+      55.89,
+      56.32,
+      55.1,
+      54.97,
+      55.11
+    ],
+    "avg_latency_ms": 80.32,
+    "p50_latency_ms": 55.48,
+    "p95_latency_ms": 56.66,
+    "p99_latency_ms": 57.28
+  },
+  "episode_details": [
+    {
+      "task_id": 0,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 111,
+      "avg_latency_ms": 318.53
+    },
+    {
+      "task_id": 1,
+      "task_name": "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl next to the ramekin and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 122,
+      "avg_latency_ms": 55.64
+    },
+    {
+      "task_id": 2,
+      "task_name": "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl from table center and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 138,
+      "avg_latency_ms": 55.41
+    },
+    {
+      "task_id": 3,
+      "task_name": "pick_up_the_black_bowl_on_the_cookie_box_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl on the cookie box and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 97,
+      "avg_latency_ms": 55.49
+    },
+    {
+      "task_id": 4,
+      "task_name": "pick_up_the_black_bowl_in_the_top_drawer_of_the_wooden_cabinet_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 142,
+      "avg_latency_ms": 55.46
+    },
+    {
+      "task_id": 5,
+      "task_name": "pick_up_the_black_bowl_on_the_ramekin_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl on the ramekin and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 95,
+      "avg_latency_ms": 55.38
+    },
+    {
+      "task_id": 6,
+      "task_name": "pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl next to the cookie box and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 116,
+      "avg_latency_ms": 55.47
+    },
+    {
+      "task_id": 7,
+      "task_name": "pick_up_the_black_bowl_on_the_stove_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl on the stove and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 127,
+      "avg_latency_ms": 55.54
+    },
+    {
+      "task_id": 8,
+      "task_name": "pick_up_the_black_bowl_next_to_the_plate_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl next to the plate and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 110,
+      "avg_latency_ms": 55.91
+    },
+    {
+      "task_id": 9,
+      "task_name": "pick_up_the_black_bowl_on_the_wooden_cabinet_and_place_it_on_the_plate.bddl",
+      "task_description": "pick up the black bowl on the wooden cabinet and place it on the plate",
+      "perturb_info": {
+        "base_suite": "pick"
+      },
+      "success": true,
+      "steps": 120,
+      "avg_latency_ms": 55.69
+    }
+  ],
+  "metadata": {
+    "start_time": "2026-06-08T09:37:22.100670",
+    "end_time": "2026-06-08T09:38:18.205171",
+    "duration_seconds": 56.1,
+    "hostname": "autodl-container-lezfbu0bdx-2f5bc1be"
+  }
+}

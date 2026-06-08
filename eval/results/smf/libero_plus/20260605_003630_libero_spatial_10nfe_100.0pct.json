@@ -1,0 +1,86 @@
+{
+  "overall": {
+    "total_success_rate": 1.0,
+    "total_episodes": 1,
+    "total_successes": 1
+  },
+  "config": {
+    "benchmark": "libero-plus",
+    "task_suite": "libero_spatial",
+    "nfe": 10,
+    "max_tasks": 1,
+    "task_offset": 0,
+    "replan_steps": 5,
+    "num_steps_wait": 10,
+    "seed": 7,
+    "checkpoint_path": "checkpoints/base/pi05_libero",
+    "action_horizon": 10
+  },
+  "per_task": {
+    "pick up the black bowl between the plate and the ramekin and place it on the plate table 1": {
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_1",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 1",
+      "success_rate": 1.0,
+      "successes": 1,
+      "episodes": 1,
+      "perturbation": "robot_init_states_table"
+    }
+  },
+  "timing": {
+    "all_latencies_ms": [
+      14929.59,
+      57.78,
+      56.81,
+      57.37,
+      57.36,
+      58.02,
+      57.05,
+      57.38,
+      56.92,
+      57.44,
+      56.47,
+      56.2,
+      55.64,
+      56.24,
+      55.58,
+      56.38,
+      55.57,
+      55.85,
+      55.45,
+      56.06,
+      55.83,
+      57.87,
+      55.38,
+      56.11
+    ],
+    "avg_latency_ms": 676.26,
+    "p50_latency_ms": 56.42,
+    "p95_latency_ms": 57.99,
+    "p99_latency_ms": 11509.13
+  },
+  "episode_details": [
+    {
+      "task_id": 0,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_table_1",
+      "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate table 1",
+      "perturbation": "robot_init_states_table",
+      "episode": 0,
+      "success": true,
+      "steps": 127,
+      "avg_latency_ms": 676.26
+    }
+  ],
+  "metadata": {
+    "start_time": "2026-06-05T00:36:09.394171",
+    "end_time": "2026-06-05T00:36:30.166124",
+    "duration_seconds": 20.8,
+    "hostname": "autodl-container-lezfbu0bdx-2f5bc1be"
+  },
+  "perturbation_stats": {
+    "robot_init_states_table": {
+      "total": 1,
+      "success": 1,
+      "rate": 1.0
+    }
+  }
+}

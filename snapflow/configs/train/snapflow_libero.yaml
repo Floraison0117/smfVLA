@@ -1,0 +1,82 @@
+# SnapFlow Training Configuration
+# Based on arXiv:2604.05656 Table 10 hyperparameters
+
+method: snapflow
+description: "SnapFlow: 1-NFE via progressive self-distillation on LIBERO"
+
+# ── Model ─────────────────────────────────────────────────
+checkpoint: /root/autodl-tmp/snapflow/checkpoints/base/pi05_libero
+pi05: true
+action_dim: 32
+action_horizon: 10
+
+# ── SnapFlow Parameters ─────────────────────────────────────
+# From paper Table 10 and Section 3.4-3.6
+alpha: 0.5                    # FM/Consistency mixing ratio (Eq. 12)
+lambda_consistency: 0.1       # Consistency loss weight (balances gradient magnitudes)
+prediction_clamp_min: -20     # Prevent numerical instabilities
+prediction_clamp_max: 20      # Prevent numerical instabilities
+
+# ── Training Hyperparameters (from paper Table 10) ───────────
+learning_rate: 2.5e-5         # 1/10 of π0.5 training rate (fine-tuning)
+weight_decay: 0.01
+warmup_ratio: 0.017           # 500 steps / 30000 total
+gradient_clipping: 1.0
+batch_size: 4                 # Matches paper configuration
+training_steps: 30000         # ~12h on single A800
+precision: bf16
+
+# ── Optimizer ───────────────────────────────────────────────
+optimizer: AdamW
+ema_decay: null
+
+# ── Data ─────────────────────────────────────────────────
+dataset: libero
+dataset_path: /root/autodl-tmp/snapflow/data/libero
+
+# ── Checkpointing ───────────────────────────────────────────
+checkpoint_dir: /root/autodl-tmp/snapflow/checkpoints/finetuned/snapflow
+log_dir: /root/autodl-tmp/snapflow/logs/train/snapflow
+save_every: 5000
+log_every: 100
+resume: null
+
+# ── WandB ──────────────────────────────────────────────────
+wandb:
+  project: snapflow
+  run_name: null
+  entity: null
+
+# ── Freeze Strategy ──────────────────────────────────────────
+# VLM backbone (PaliGemma) is frozen
+# Only action expert + target_time_mlp are trainable
+freeze:
+  - "PaliGemma/img/**"
+  - "PaliGemma/llm/embedder/**"
+  - "PaliGemma/llm/final_norm/scale"
+  - "PaliGemma/llm/layers/attn/q_einsum/w"
+  - "PaliGemma/llm/layers/attn/kv_einsum/w"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
+  - "PaliGemma/llm/layers/mlp/gating_einsum"
+  - "PaliGemma/llm/layers/mlp/linear"
+  - "PaliGemma/llm/layers/pre_attention_norm/scale"
+  - "PaliGemma/llm/layers/pre_ffw_norm/scale"
+
+trainable:
+  # Action expert layers (with _1 suffix)
+  - "PaliGemma/llm/layers/attn/q_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
+  - "PaliGemma/llm/layers/mlp_1/**"
+  - "PaliGemma/llm/layers/pre_attention_norm_1/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
+  - "PaliGemma/llm/final_norm_1/**"
+  # Action projection layers
+  - "action_in_proj/**"
+  - "action_out_proj/**"
+  # Time embedding
+  - "time_mlp_in/**"
+  - "time_mlp_out/**"
+  - "time_proj/**"
+  # NEW: SnapFlow target-time MLP
+  - "target_time_mlp/**"

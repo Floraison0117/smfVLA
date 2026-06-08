@@ -1,0 +1,32 @@
+# Large datasets and checkpoints
+datasets/
+checkpoints/
+*.ckpt
+*.pth
+*.safetensors
+
+# Training logs
+logs/
+wandb/
+tensorboard/
+
+# Conda environments
+conda_envs/
+*.tar.gz
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# AutoDL specific
+.autodl/
+
+# Temporary files
+*.tmp
+*.log
