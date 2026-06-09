@@ -11,8 +11,11 @@
     # LIBERO 标准评估，fullset 模式，1-NFE，SnapFlow 模型
     python run_eval.py --dataset libero --mode fullset --nfe 1 --model-type snapflow
 
-    # LIBERO-Plus 鲁棒性评估，quick 模式，1-NFE
-    python run_eval.py --dataset libero-plus --mode quick --nfe 1 --model-type smf
+    # LIBERO 标准评估，quick 模式，1-NFE，FreeFlow 模型
+    python run_eval.py --dataset libero --mode quick --nfe 1 --model-type freeflow
+
+    # LIBERO-Plus 鲁棒性评估，quick 模式，1-NFE，FreeFlow 模型
+    python run_eval.py --dataset libero-plus --mode quick --nfe 1 --model-type freeflow
 
     # 测试不同 NFE 值
     python run_eval.py --dataset libero --mode quick --nfe 2 --model-type smf
@@ -41,7 +44,7 @@ def get_default_checkpoint(model_type: str, dataset: str) -> str:
     根据模型类型和数据集返回默认 checkpoint 路径。
 
     Args:
-        model_type: 'smf' 或 'snapflow'
+        model_type: 'smf', 'snapflow', 或 'freeflow'
         dataset: 'libero' 或 'libero-plus'
 
     Returns:
@@ -53,6 +56,9 @@ def get_default_checkpoint(model_type: str, dataset: str) -> str:
     elif model_type == "snapflow":
         # SnapFlow 也使用 base checkpoint (软链接到 smf_base)
         return str(PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero")
+    elif model_type == "freeflow":
+        # FreeFlow 使用 base checkpoint
+        return str(PROJECT_ROOT / "checkpoints" / "freeflow" / "pi05_libero")
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -146,8 +152,8 @@ def main():
   # LIBERO fullset 模式
   python run_eval.py --dataset libero --mode fullset --nfe 1 --model-type snapflow
 
-  # LIBERO-Plus quick 模式
-  python run_eval.py --dataset libero-plus --mode quick --nfe 1 --model-type smf
+  # LIBERO-Plus quick 模式 (FreeFlow)
+  python run_eval.py --dataset libero-plus --mode quick --nfe 1 --model-type freeflow
 
   # 自定义 LIBERO 评估
   python run_eval.py --dataset libero --task-suite libero_spatial --num-episodes 10 --nfe 2
@@ -168,7 +174,7 @@ def main():
   full90    - libero_90 suite
 
 NFE 说明:
-  1  - 1 步推理 (SMF/SnapFlow)
+  1  - 1 步推理 (SMF/SnapFlow/FreeFlow)
   2  - 2 步推理
   4  - 4 步推理
   10 - 10 步推理 (Pi0 原始)
@@ -198,7 +204,7 @@ NFE 说明:
     parser.add_argument("--nfe", type=int, default=1, choices=[1, 2, 4, 10],
                         help="Number of Function Evaluations")
     parser.add_argument("--model-type", type=str, default="smf",
-                        choices=["smf", "snapflow"],
+                        choices=["smf", "snapflow", "freeflow"],
                         help="模型类型")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Checkpoint 目录路径")

@@ -1,0 +1,94 @@
+# FreeFlow config for LIBERO-Plus training (FIXED)
+# Data-free distillation from π₀.₅ teacher (NFE=10) to 1-NFE student
+
+model:
+  name: freeflow_base
+  description: "Basic FreeFlow with error correction on LIBERO-Plus"
+  action_dim: 32
+  action_horizon: 1
+  teacher_nfe: 10
+  lambda_correction: 0.1
+
+training:
+  batch_size: 16  # Reduced from 32 for stability (97GB GPU)
+  learning_rate: 2.5e-5
+  warmup_steps: 500
+  total_steps: 30000
+  eval_every: 1000
+  save_every: 5000
+  log_every: 100
+  gradient_clip: 1.0
+  precision: bfloat16
+
+optimizer:
+  name: adamw
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+scheduler:
+  name: cosine_decay
+  warmup_steps: 500
+
+data:
+  # FIXED: Use libero-plus-training for robustness training
+  dataset_path: data/libero-plus-training
+  norm_stats: data/libero-plus-training/norm_stats.json
+  num_workers: 4
+  prefetch_size: 2
+
+# FIXED: Use specific freeze patterns from freeze_utils.py
+freeze:
+  # Freeze VLM backbone (vision encoder)
+  - "PaliGemma/img/**"
+  # Freeze token embedding
+  - "PaliGemma/llm/embedder/**"
+  # Freeze VLM final norm (no _1 suffix)
+  - "PaliGemma/llm/final_norm/scale"
+  # Freeze VLM attention (no _1 suffix)
+  - "PaliGemma/llm/layers/attn/q_einsum/w"
+  - "PaliGemma/llm/layers/attn/kv_einsum/w"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
+  # Freeze VLM MLP (no _1 suffix)
+  - "PaliGemma/llm/layers/mlp/gating_einsum"
+  - "PaliGemma/llm/layers/mlp/linear"
+  # Freeze VLM norm (no _1 suffix)
+  - "PaliGemma/llm/layers/pre_attention_norm/scale"
+  - "PaliGemma/llm/layers/pre_ffw_norm/scale"
+
+trainable:
+  # Action expert attention (_1 suffix)
+  - "PaliGemma/llm/layers/attn/q_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
+  # Action expert MLP (_1 suffix)
+  - "PaliGemma/llm/layers/mlp_1/**"
+  # Action expert norm (_1 suffix)
+  - "PaliGemma/llm/layers/pre_attention_norm_1/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
+  # Action expert final norm
+  - "PaliGemma/llm/final_norm_1/**"
+  # Action projection
+  - "action_in_proj/**"
+  - "action_out_proj/**"
+  # Time MLP (time_proj not used in current implementation)
+  - "time_mlp_in/**"
+  - "time_mlp_out/**"
+
+checkpointing:
+  # FIXED: Use relative path (resolves via symlink)
+  base_checkpoint: checkpoints/base/pi05_libero
+  save_dir: checkpoints/finetuned/freeflow
+  resume: null
+
+logging:
+  project: freeflow
+  entity: null
+  mode: online
+  tags: ["libero-plus", "1nfe", "data-free"]
+
+evaluation:
+  nfe: 1
+  eval_during_training: true
+  eval_tasks: ["libero_spatial", "libero_object", "libero_goal"]
+  eval_episodes: 10

@@ -21,7 +21,7 @@ import numpy as np
 # eval/ 目录是独立的，PROJECT_ROOT 指向 autodl-tmp/
 EVAL_ROOT = pathlib.Path(__file__).resolve().parent.parent
 PROJECT_ROOT = EVAL_ROOT.parent
-OPENPI_DIR = PROJECT_ROOT / "third_party" / "openpi"
+OPENPI_DIR = PROJECT_ROOT / "openpi"
 
 # ── 评测常量 ──────────────────────────────────────────────
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 def setup_paths():
     """添加评测所需的 sys.path 条目（幂等）。"""
     for p in [
-        str(PROJECT_ROOT / "src"),
+        str(PROJECT_ROOT / "smfVLA" / "src"),
+        str(PROJECT_ROOT / "snapflow" / "src"),
+        str(PROJECT_ROOT / "freeflow" / "src"),
         str(OPENPI_DIR / "src"),
         str(OPENPI_DIR / "packages" / "openpi-client" / "src"),
         str(OPENPI_DIR / "third_party" / "libero"),
@@ -85,14 +87,60 @@ def preprocess_obs(obs, resize_size=224):
     return img, wrist_img, state
 
 
-def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflow: bool = False):
+def _detect_checkpoint_type(checkpoint_path: pathlib.Path) -> str:
+    """
+    检测 checkpoint 类型：original, smf, snapflow, 或 freeflow。
+
+    通过检查是否存在特定参数：
+    - original: 没有 time_proj
+    - smf: 有 time_proj 但没有 target_time_mlp, 没有 student_head
+    - snapflow: 有 target_time_mlp
+    - freeflow: 有 student_head
+    """
+    import jax
+    import flax.traverse_util as traverse_util
+    import orbax.checkpoint as ocp
+
+    params_path = checkpoint_path / "params"
+    checkpointer = ocp.PyTreeCheckpointer()
+
+    try:
+        params = checkpointer.restore(str(params_path))
+    except ValueError as e:
+        if "sharding" in str(e).lower():
+            from jax.sharding import SingleDeviceSharding
+            single_sharding = SingleDeviceSharding(jax.devices()[0])
+            restore_args = jax.tree.map(
+                lambda _: ocp.ArrayRestoreArgs(sharding=single_sharding),
+                checkpointer.metadata(str(params_path))
+            )
+            params = checkpointer.restore(str(params_path), restore_args=restore_args)
+        else:
+            raise
+
+    flat = traverse_util.flatten_dict(params)
+    has_time_proj = any('time_proj' in '/'.join(k) for k in flat.keys())
+    has_target_time_mlp = any('target_time_mlp' in '/'.join(k) for k in flat.keys())
+    has_student_head = any('student_head' in '/'.join(k) for k in flat.keys())
+
+    if has_student_head:
+        return "freeflow"
+    elif has_target_time_mlp:
+        return "snapflow"
+    elif has_time_proj:
+        return "smf"
+    else:
+        return "original"
+
+
+def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflow: bool = False, use_freeflow: bool = False):
     """
     加载 policy。
 
-    nfe=10: 使用原始 Pi0 模型（默认 num_steps=10）
-    nfe=1 + use_smf=True:  使用 Pi05SMF 模型（需要 SMF checkpoint）
-    nfe=1 + use_smf=False: 使用原始 Pi0 模型（用于 pi05-libero 等非 SMF checkpoint）
-    nfe=1 + use_snapflow=True: 使用 Pi05SnapFlow 模型（需要 SnapFlow checkpoint）
+    支持三种方式（均支持任意 NFE）：
+    1. 原生 Pi05 (use_smf=False, use_snapflow=False): 使用原始 Pi05 模型
+    2. SMF (use_smf=True, use_snapflow=False): 使用 Pi05SMF 模型
+    3. SnapFlow (use_snapflow=True): 使用 Pi05SnapFlow 模型
     """
     import jax
     from openpi.policies import policy_config as _policy_config
@@ -101,8 +149,12 @@ def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflo
     checkpoint_path = pathlib.Path(checkpoint_dir).resolve()
     train_config = _config.get_config("pi05_libero")
 
-    if nfe == 1 and use_snapflow:
-        logger.info("Loading Pi05SnapFlow model for 1-NFE inference...")
+    # 检测 checkpoint 类型
+    ckpt_type = _detect_checkpoint_type(checkpoint_path)
+    logger.info(f"Checkpoint type: {ckpt_type}, NFE={nfe}, use_smf={use_smf}, use_snapflow={use_snapflow}")
+
+    if use_snapflow:
+        logger.info(f"Loading Pi05SnapFlow model for {nfe}-NFE inference...")
         import flax.nnx as nnx
         import flax.traverse_util as traverse_util
         import orbax.checkpoint as ocp
@@ -188,8 +240,87 @@ def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflo
             sample_kwargs={"num_steps": nfe},
         )
         return policy
-    elif nfe == 1 and use_smf:
-        logger.info("Loading Pi05SMF model for 1-NFE inference...")
+    elif use_freeflow:
+        logger.info(f"Loading Pi05FreeFlow model for {nfe}-NFE inference...")
+        import flax.nnx as nnx
+        import flax.traverse_util as traverse_util
+        import orbax.checkpoint as ocp
+        from freeflow.models.pi05_freeflow import Pi05FreeFlow, create_freeflow_model
+        from openpi.models import pi0_config
+
+        checkpointer = ocp.PyTreeCheckpointer()
+        try:
+            params = checkpointer.restore(str(checkpoint_path / "params"))
+        except ValueError as e:
+            if "sharding" in str(e).lower():
+                logger.info("Multi-device checkpoint detected, restoring with single-device sharding...")
+                from jax.sharding import SingleDeviceSharding
+                single_sharding = SingleDeviceSharding(jax.devices()[0])
+                restore_args = jax.tree.map(
+                    lambda _: ocp.ArrayRestoreArgs(sharding=single_sharding),
+                    checkpointer.metadata(str(checkpoint_path / "params"))
+                )
+                params = checkpointer.restore(str(checkpoint_path / "params"), restore_args=restore_args)
+            else:
+                raise
+
+        # Create FreeFlow model
+        config = pi0_config.Pi0Config(
+            vision_encoder_variant="siglip-so400m-14-9at",
+            action_expert_variant="gemma2-2b",
+        )
+        model = create_freeflow_model(config)
+        graphdef, state = nnx.split(model)
+        pure_state = state.to_pure_dict()
+
+        flat_params = traverse_util.flatten_dict(params)
+        flat_state = traverse_util.flatten_dict(pure_state)
+
+        loaded_count = 0
+        for key in flat_state:
+            if key in flat_params:
+                flat_state[key] = flat_params[key]
+                loaded_count += 1
+            elif "time_proj" in "/".join(key) or "student_head" in "/".join(key):
+                logger.info(f"Skipping (keeping init): {'/'.join(key)}")
+            else:
+                logger.warning(f"Not in checkpoint: {'/'.join(key)}")
+
+        logger.info(f"Loaded {loaded_count} parameters")
+        pure_state = traverse_util.unflatten_dict(flat_state)
+        state.replace_by_pure_dict(pure_state)
+        model = nnx.merge(graphdef, state)
+
+        from openpi.policies import policy as _policy
+        from openpi import transforms as _transforms
+        from openpi.training import checkpoints as _checkpoints
+
+        data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+        base_ckpt = PROJECT_ROOT / "checkpoints" / "freeflow" / "pi05_libero"
+        assets_dir = checkpoint_path / "assets"
+        if not assets_dir.exists():
+            assets_dir = base_ckpt / "assets"
+            logger.info(f"Using base checkpoint assets: {assets_dir}")
+        norm_stats = _checkpoints.load_norm_stats(assets_dir, data_config.asset_id)
+
+        policy = _policy.Policy(
+            model,
+            transforms=[
+                _transforms.InjectDefaultPrompt(None),
+                *data_config.data_transforms.inputs,
+                _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.model_transforms.inputs,
+            ],
+            output_transforms=[
+                *data_config.model_transforms.outputs,
+                _transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.data_transforms.outputs,
+            ],
+            sample_kwargs={"num_steps": nfe},
+        )
+        return policy
+    elif use_smf and not use_snapflow:
+        logger.info(f"Loading Pi05SMF model for {nfe}-NFE inference...")
         import flax.nnx as nnx
         import flax.traverse_util as traverse_util
         import orbax.checkpoint as ocp
@@ -269,7 +400,7 @@ def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflo
         )
         return policy
     else:
-        logger.info("Loading Pi0 model for 10-NFE inference...")
+        logger.info(f"Loading original Pi05 model for {nfe}-NFE inference...")
         policy = _policy_config.create_trained_policy(
             train_config,
             str(checkpoint_path),

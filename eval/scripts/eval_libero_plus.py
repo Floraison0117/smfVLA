@@ -72,9 +72,10 @@ from libero.libero.envs import OffScreenRenderEnv
 # ── Preset 定义 ──────────────────────────────────────────
 PRESETS = {
     "quick": {
-        "suites": ["libero_spatial"],
-        "max_tasks": 50,
-        "description": "快速测试：libero_spatial 前 50 个任务",
+        "suites": ["libero_spatial", "libero_object", "libero_goal", "libero_10"],
+        "max_tasks": 10,
+        "num_episodes": 5,
+        "description": "快速测试：4 个 suites，每个 10 tasks × 5 episodes",
     },
     "medium": {
         "suites": ["libero_spatial"],
@@ -120,7 +121,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
-                   replan_steps, num_steps_wait, checkpoint):
+                   replan_steps, num_steps_wait, checkpoint, num_episodes=1):
     """评测单个 suite。"""
     np.random.seed(seed)
     start_time = time.time()
@@ -166,58 +167,73 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
         rel_id = task_id - task_start
         logger.info(f"[{rel_id+1}/{actual_tasks}] {task_description[:80]}...")
 
-        # LIBERO-Plus: 1 episode per task (different perturbations are different tasks)
-        episode_idx = 0
+        # LIBERO-Plus: 支持多 episodes per task
+        task_episodes = 0
+        task_successes = 0
 
-        try:
-            done, steps, ep_latencies = run_single_task_episode(
-                env=env,
-                initial_state=initial_states[episode_idx],
-                task_description=task_description,
-                policy=policy,
-                max_steps=max_steps,
-                num_steps_wait=num_steps_wait,
-                replan_steps=replan_steps,
-            )
+        max_available = len(initial_states)
+        actual_episodes = min(num_episodes, max_available)
 
-            all_latencies.extend(ep_latencies)
-            if done:
-                total_successes += 1
+        for episode_idx in range(actual_episodes):
+            try:
+                done, steps, ep_latencies = run_single_task_episode(
+                    env=env,
+                    initial_state=initial_states[episode_idx],
+                    task_description=task_description,
+                    policy=policy,
+                    max_steps=max_steps,
+                    num_steps_wait=num_steps_wait,
+                    replan_steps=replan_steps,
+                )
 
-            total_episodes += 1
-            status = "✓ SUCCESS" if done else "✗ FAILURE"
-            logger.info(f"  {status} (steps={steps})")
+                all_latencies.extend(ep_latencies)
+                if done:
+                    task_successes += 1
+                    total_successes += 1
 
-            episode_details.append({
-                "task_id": task_id,
-                "task_name": task_name,
-                "task_description": task_description,
-                "perturb_info": perturb_info,
-                "success": done,
-                "steps": steps,
-                "avg_latency_ms": round(float(np.mean(ep_latencies)), 2) if ep_latencies else 0.0,
-            })
+                task_episodes += 1
+                total_episodes += 1
+                status = "✓ SUCCESS" if done else "✗ FAILURE"
+                logger.info(f"  Ep {episode_idx+1}/{actual_episodes}: {status} (steps={steps})")
 
-            # ⭐ FIX: Use task_name as key (not task_description)
-            task_results[task_name] = {
-                "task_id": task_id,
-                "task_name": task_name,
-                "task_description": task_description,
-                "perturb_info": perturb_info,
-                "success": int(done),
-            }
+                episode_details.append({
+                    "task_id": task_id,
+                    "episode_idx": episode_idx,
+                    "task_name": task_name,
+                    "task_description": task_description,
+                    "perturb_info": perturb_info,
+                    "success": done,
+                    "steps": steps,
+                    "avg_latency_ms": round(float(np.mean(ep_latencies)), 2) if ep_latencies else 0.0,
+                })
 
-        except Exception as e:
-            logger.warning(f"Task {task_id} failed with error: {e}")
-            episode_details.append({
-                "task_id": task_id,
-                "task_name": task_name,
-                "task_description": task_description,
-                "perturb_info": perturb_info,
-                "success": False,
-                "steps": 0,
-                "error": str(e),
-            })
+            except Exception as e:
+                logger.warning(f"Task {task_id} Ep {episode_idx+1} failed with error: {e}")
+                episode_details.append({
+                    "task_id": task_id,
+                    "episode_idx": episode_idx,
+                    "task_name": task_name,
+                    "task_description": task_description,
+                    "perturb_info": perturb_info,
+                    "success": False,
+                    "steps": 0,
+                    "error": str(e),
+                })
+
+        # Task level summary
+        task_rate = task_successes / task_episodes if task_episodes > 0 else 0
+        logger.info(f"  Task {task_name}: {task_successes}/{task_episodes} ({task_rate*100:.1f}%)")
+
+        # ⭐ FIX: Use task_name as key (not task_description)
+        task_results[task_name] = {
+            "task_id": task_id,
+            "task_name": task_name,
+            "task_description": task_description,
+            "perturb_info": perturb_info,
+            "successes": task_successes,
+            "episodes": task_episodes,
+            "rate": task_rate,
+        }
 
         env.close()
 
@@ -228,7 +244,7 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
     p95_latency = np.percentile(all_latencies, 95) if all_latencies else 0
 
     logger.info("=" * 60)
-    logger.info(f"RESULTS: {suite_name} | NFE={nfe} | {actual_tasks} tasks")
+    logger.info(f"RESULTS: {suite_name} | NFE={nfe} | {actual_tasks} tasks | {num_episodes} ep/task")
     logger.info("=" * 60)
     logger.info(f"Total: {total_successes}/{total_episodes} ({total_rate*100:.1f}%)")
     logger.info(f"Avg latency: {avg_latency:.1f}ms | P95: {p95_latency:.1f}ms")
@@ -296,16 +312,32 @@ Examples:
     parser.add_argument("--results-dir", type=str,
                         default=str(PROJECT_ROOT / "eval" / "results" / "smf" / "libero_plus"),
                         help="Directory to save results")
+    parser.add_argument("--model-type", type=str, default="smf",
+                        choices=["smf", "snapflow", "freeflow"],
+                        help="Model type: smf, snapflow, freeflow, or original (use --no-smf)")
+    parser.add_argument("--no-smf", action="store_true",
+                        help="Use original Pi05 model (instead of SMF) for any NFE")
+    parser.add_argument("--num-episodes", type=int, default=None,
+                        help="Episodes per task (default: from preset or 1)")
     args = parser.parse_args()
 
-    # 确定 suites 和 max_tasks
+    # 根据模型类型动态设置默认 results_dir
+    if args.results_dir == str(PROJECT_ROOT / "eval" / "results" / "smf" / "libero_plus"):
+        # 如果用户没有修改默认值，根据 model_type 更新
+        args.results_dir = str(PROJECT_ROOT / "eval" / "results" / args.model_type / "libero_plus")
+
+    # 确定 suites, max_tasks 和 num_episodes
     if args.preset:
         preset = PRESETS[args.preset]
         suites = preset["suites"]
         if args.max_tasks is None:
             args.max_tasks = preset["max_tasks"]
+        if args.num_episodes is None:
+            args.num_episodes = preset.get("num_episodes", 1)
     elif args.suite:
         suites = [args.suite]
+        if args.num_episodes is None:
+            args.num_episodes = 1
     else:
         parser.error("Must specify --suite or --preset")
 
@@ -313,6 +345,7 @@ Examples:
     logger.info(f"  Suites: {suites}")
     logger.info(f"  NFE: {args.nfe}")
     logger.info(f"  Max tasks: {args.max_tasks or 'all'}")
+    logger.info(f"  Episodes per task: {args.num_episodes}")
     logger.info(f"  Task offset: {args.task_offset}")
     logger.info(f"  Checkpoint: {args.checkpoint}")
     logger.info(f"  Replan steps: {args.replan_steps}")
@@ -332,7 +365,10 @@ Examples:
         logger.info(f"Loading model for NFE={nfe}...")
         logger.info(f"{'='*60}\n")
 
-        policy = load_policy(nfe, args.checkpoint)
+        use_smf = (args.model_type == "smf") and not args.no_smf
+        use_snapflow = args.model_type == "snapflow"
+        use_freeflow = args.model_type == "freeflow"
+        policy = load_policy(nfe, args.checkpoint, use_smf=use_smf, use_snapflow=use_snapflow, use_freeflow=use_freeflow)
 
         for suite_name in suites:
             logger.info(f"\n{'='*60}")
@@ -349,6 +385,7 @@ Examples:
                 replan_steps=args.replan_steps,
                 num_steps_wait=args.num_steps_wait,
                 checkpoint=args.checkpoint,
+                num_episodes=args.num_episodes,
             )
             all_results.append(result)
 

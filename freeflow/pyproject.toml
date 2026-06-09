@@ -1,0 +1,39 @@
+[project]
+name = "freeflow"
+version = "0.1.0"
+description = "FreeFlow: Data-free distillation for 1-NFE VLA training on LIBERO-Plus"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "jax[cuda12]>=0.4.30",
+    "jaxlib>=0.4.30",
+    "flax>=0.8.0",
+    "optax>=0.2.0",
+    "orbax>=0.1.5",
+    "numpy>=1.24.0",
+    "pillow>=10.0.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+    "wandb>=0.15.0",
+    "lerero>=0.1.0",
+    "protobuf>=4.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

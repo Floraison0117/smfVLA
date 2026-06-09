@@ -1,0 +1,78 @@
+# FreeFlow config without error correction (ablation)
+# Tests the impact of error correction on performance
+
+model:
+  name: freeflow_no_correction
+  description: "FreeFlow without error correction (ablation)"
+  action_dim: 32
+  action_horizon: 1
+  teacher_nfe: 10
+  lambda_correction: 0.0  # Disabled
+
+training:
+  batch_size: 16  # Increased from 4 (97GB GPU, teacher frozen)
+  learning_rate: 2.5e-5
+  warmup_steps: 500
+  total_steps: 30000
+  eval_every: 1000
+  save_every: 5000
+  log_every: 100
+  gradient_clip: 1.0
+  precision: bfloat16
+
+optimizer:
+  name: adamw
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+scheduler:
+  name: cosine_decay
+  warmup_steps: 500
+
+data:
+  dataset_path: ../data/libero
+  norm_stats: ../data/libero/norm_stats.json
+  num_workers: 4
+  prefetch_size: 2
+
+freeze:
+  - "*siglip*"
+  - "*vit*"
+  - "*token_embedding*"
+  - "*transformer*layers*0*"
+  - "*transformer*layers*1*"
+  - "*transformer*layers*2*"
+  - "*transformer*layers*3*"
+  - "*transformer*layers*4*"
+  - "*transformer*layers*5*"
+  - "*transformer*layers*6*"
+  - "*transformer*layers*7*"
+  - "*transformer*layers*8*"
+  - "*transformer*layers*9*"
+  - "*transformer*layers*10*"
+  - "*transformer*layers*11*"
+
+trainable:
+  - "*transformer*layers*1*"
+  - "*action_in_proj*"
+  - "*action_out_proj*"
+  - "*time_mlp*"
+  - "*time_proj*"
+
+checkpointing:
+  base_checkpoint: ../checkpoints/base/pi05_libero
+  save_dir: ../checkpoints/finetuned/freeflow
+  resume: null
+
+logging:
+  project: freeflow
+  entity: null
+  mode: online
+  tags: ["libero-plus", "1nfe", "data-free", "ablation"]
+
+evaluation:
+  nfe: 1
+  eval_during_training: true
+  eval_tasks: ["libero_spatial", "libero_object", "libero_goal"]
+  eval_episodes: 10

@@ -49,7 +49,7 @@ PRESETS = {
     },
     "preset": {
         "suites": ["libero_spatial", "libero_object", "libero_goal", "libero_10"],
-        "num_episodes": 50,  # 标准评估：50 episodes/task, 4 suites
+        "num_episodes": 5,  # 标准评估：5 episodes/task, 4 suites
     },
     "fullset": {
         "suites": ["libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"],
@@ -71,7 +71,8 @@ def run_eval(args):
     # 加载 policy
     use_smf = (args.model_type == "smf") and not args.no_smf
     use_snapflow = args.model_type == "snapflow"
-    policy = load_policy(args.nfe, args.checkpoint, use_smf=use_smf, use_snapflow=use_snapflow)
+    use_freeflow = args.model_type == "freeflow"
+    policy = load_policy(args.nfe, args.checkpoint, use_smf=use_smf, use_snapflow=use_snapflow, use_freeflow=use_freeflow)
 
     # 加载 LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -214,9 +215,9 @@ def main():
     parser.add_argument("--no-video", action="store_true",
                         help="Skip video recording (useful for full eval to save disk)")
     parser.add_argument("--no-smf", action="store_true",
-                        help="Use original Pi0 model for 1-NFE (instead of Pi05SMF). Required for non-SMF checkpoints like pi05-libero.")
-    parser.add_argument("--model-type", type=str, default="smf", choices=["smf", "snapflow"],
-                        help="Model type: 'smf' or 'snapflow'")
+                        help="Use original Pi05 model (instead of SMF) for any NFE")
+    parser.add_argument("--model-type", type=str, default="smf", choices=["smf", "snapflow", "freeflow"],
+                        help="Model type: 'smf', 'snapflow', 'freeflow', or original (use --no-smf)")
     args = parser.parse_args()
 
     # 应用预设覆盖
