@@ -21,7 +21,7 @@ accurate and authoritative. This file captures only what is easy to miss.
   edit code through these symlinks — edit `openpi/` directly.
 - Method package names differ: `smf_vla`, `snapflow`, `freeflow`, `dmf_vla`
   (under `<method>/src/`). SnapFlow's model subclasses SMF's `Pi05SMF`.
-- Shared finetune base for all methods: `checkpoints/smf_base/pi05_libero/`.
+- Shared finetune base for all methods: `checkpoints/pi05_libero/`.
 - **Nested git repos:** `openpi/`, `smfVLA/`, and `dmf/` each have their own
   `.git` — they are embedded repos (not submodules). Commits inside them are
   independent of the root repo. `snapflow/` and `freeflow/` are tracked by the
@@ -61,8 +61,9 @@ python run_eval.py --dataset calvin      --calvin-dataset debug --nfe 1 --model-
   method `src/` dirs + openpi into `sys.path`, so no manual PYTHONPATH is needed
   for eval.
 - `detect_checkpoint_type()` **auto-sniffs the method from checkpoint param keys**
-  (`t_time_mlp`+`r_time_mlp`→DMF, `target_time_mlp`→SnapFlow, `time_proj`→SMF,
-  `time_mlp_in`→FreeFlow). `--model-type` is usually optional.
+  (`logvar_proj`→DMF, `target_time_mlp`→SnapFlow, `time_proj`→SMF,
+  `time_mlp_in`→FreeFlow). DMF reuses base `time_mlp_in`/`time_mlp_out` for
+  both E(t) and E(r); `logvar_proj` is its unique identifier. `--model-type` is usually optional.
 - NFE = sampling `num_steps`; all methods support 1/2/4/10.
 - Two checkpoint formats: standard (`ckpt/params/`) and FreeFlow (flat, with
   `_METADATA` at root) — both handled by `eval_utils`.

@@ -40,15 +40,19 @@ logger = logging.getLogger(__name__)
 
 def setup_paths():
     """添加评测所需的 sys.path 条目（幂等）。"""
-    for p in [
+    paths = [
         str(PROJECT_ROOT / "smfVLA" / "src"),
         str(PROJECT_ROOT / "snapflow" / "src"),
         str(PROJECT_ROOT / "freeflow" / "src"),
         str(PROJECT_ROOT / "dmf" / "src"),
         str(OPENPI_DIR / "src"),
         str(OPENPI_DIR / "packages" / "openpi-client" / "src"),
-        str(OPENPI_DIR / "third_party" / "libero"),
-    ]:
+    ]
+    # Only add openpi/third_party/libero if it exists and is non-empty
+    libero_tp = OPENPI_DIR / "third_party" / "libero"
+    if libero_tp.exists() and any(libero_tp.iterdir()):
+        paths.append(str(libero_tp))
+    for p in paths:
         if p not in sys.path:
             sys.path.insert(0, p)
 
@@ -133,7 +137,8 @@ def _detect_checkpoint_type(checkpoint_path: pathlib.Path) -> str:
     - smf: 有 time_proj 但没有 target_time_mlp, 没有 time_mlp_in
     - snapflow: 有 target_time_mlp
     - freeflow: 有 time_mlp_in (FreeFlow dual time embeddings)
-    - dmf: 有 t_time_mlp 和 r_time_mlp (DMF decoupled time embeddings)
+    - dmf: 有 logvar_proj (DMF learned-variance head; DMF reuses base time_mlp_in/out
+      for both E(t) and E(r), so logvar_proj is the unique DMF identifier)
 
     支持两种 checkpoint 格式：
     - 标准格式: checkpoint_path/params/ (SMF, SnapFlow, DMF, base)
@@ -190,16 +195,15 @@ def _detect_checkpoint_type(checkpoint_path: pathlib.Path) -> str:
     has_time_proj = any('time_proj' in '/'.join(k) for k in flat.keys())
     has_target_time_mlp = any('target_time_mlp' in '/'.join(k) for k in flat.keys())
     has_time_mlp_in = any('time_mlp_in' in '/'.join(k) for k in flat.keys())
-    has_t_time_mlp = any('t_time_mlp' in '/'.join(k) for k in flat.keys())
-    has_r_time_mlp = any('r_time_mlp' in '/'.join(k) for k in flat.keys())
+    has_logvar_proj = any('logvar_proj' in '/'.join(k) for k in flat.keys())
 
     # Detection order matters! Check unique identifiers first.
-    # DMF: has t_time_mlp AND r_time_mlp (unique pair)
+    # DMF: has logvar_proj (unique to DMF; DMF reuses base time_mlp_in/out)
     # SnapFlow: has target_time_mlp (unique)
     # SMF: has time_proj (unique)
     # FreeFlow: has time_mlp_in AND FreeFlow checkpoint structure
     # Original: has time_mlp_in but standard checkpoint structure
-    if has_t_time_mlp and has_r_time_mlp:
+    if has_logvar_proj:
         return "dmf"
     elif has_target_time_mlp:
         return "snapflow"
@@ -345,7 +349,8 @@ def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflo
             if key in flat_params:
                 flat_state[key] = flat_params[key]
                 loaded_count += 1
-            elif "t_time_mlp" in "/".join(key) or "r_time_mlp" in "/".join(key) or "logvar_proj" in "/".join(key):
+            elif "logvar_proj" in "/".join(key):
+                logger.info(f"Skipping (keeping init): {'/'.join(key)}")
                 logger.info(f"Skipping (keeping init): {'/'.join(key)}")
             else:
                 logger.warning(f"Not in checkpoint: {'/'.join(key)}")
@@ -360,7 +365,7 @@ def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflo
         from openpi.training import checkpoints as _checkpoints
 
         data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
-        base_ckpt = PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero"
+        base_ckpt = PROJECT_ROOT / "checkpoints" / "pi05_libero"
         assets_dir = checkpoint_path / "assets"
         if not assets_dir.exists():
             assets_dir = base_ckpt / "assets"
@@ -433,7 +438,7 @@ def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflo
             logger.info(f"Loading base model from SMF base checkpoint first...")
 
             # Load base model from SMF base checkpoint
-            base_ckpt_path = PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero"
+            base_ckpt_path = PROJECT_ROOT / "checkpoints" / "pi05_libero"
             base_checkpointer = ocp.PyTreeCheckpointer()
 
             base_params = load_checkpoint_with_single_device_sharding(base_checkpointer, base_ckpt_path / "params")
@@ -494,7 +499,7 @@ def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflo
         # Try checkpoint assets first, then fall back to SMF base
         assets_dir = checkpoint_path / "assets"
         if not assets_dir.exists():
-            assets_dir = PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero" / "assets"
+            assets_dir = PROJECT_ROOT / "checkpoints" / "pi05_libero" / "assets"
             logger.info(f"Using SMF base checkpoint assets: {assets_dir}")
         norm_stats = _checkpoints.load_norm_stats(assets_dir, data_config.asset_id)
 
@@ -558,7 +563,7 @@ def load_policy(nfe: int, checkpoint_dir: str, use_smf: bool = True, use_snapflo
         from openpi.training import checkpoints as _checkpoints
 
         data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
-        base_ckpt = PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero"
+        base_ckpt = PROJECT_ROOT / "checkpoints" / "pi05_libero"
         assets_dir = checkpoint_path / "assets"
         if not assets_dir.exists():
             assets_dir = base_ckpt / "assets"

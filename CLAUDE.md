@@ -32,7 +32,7 @@ Every method lives in `<method>/` (`smfVLA`, `snapflow`, `freeflow`, `dmf`) with
 
 (`<pkg>` = `smf_vla` / `snapflow` / `freeflow` / `dmf_vla`. SnapFlow's model **subclasses** SMF's `Pi05SMF`.)
 
-**All four finetune from the same shared base:** `checkpoints/smf_base/pi05_libero/` (`params/` + `assets/`). All **freeze the VLM backbone** and train only the action-expert layers (`*_1` suffix) + projection layers **plus each method's new time-embedding heads**.
+**All four finetune from the same shared base:** `checkpoints/pi05_libero/` (`params/` + `assets/`). All **freeze the VLM backbone** and train only the action-expert layers (`*_1` suffix) + projection layers **plus each method's new time-embedding heads**.
 
 **Per-method difference is concentrated in the loss + the added head:**
 
@@ -41,7 +41,7 @@ Every method lives in `<method>/` (`smfVLA`, `snapflow`, `freeflow`, `dmf`) with
 | SMF | `time_proj` (t,r) | `(1−flow_ratio)·L_SMF + flow_ratio·L_FM`  (`flow_ratio≈0.3`); L_SMF = self-consistency `u(z_t,r,t)` |
 | SnapFlow | `target_time_mlp` | `α·L_FM + (1−α)·λ·L_shortcut`  (`α=0.5`, `λ=0.1`); 2-step Euler shortcut target |
 | FreeFlow | dual time emb `time_mlp_in` | `L_path + λ·L_correction`  (`λ=0.1`, `teacher_nfe=10`); student 1-step vs frozen teacher 10-step Euler path. **Data-free** (no action labels) |
-| DMF | `t_time_mlp`, `r_time_mlp`, `logvar_proj` | `0.5·(L_FM + L_MF)`; encoder cond. on t, decoder on r; JVP computes `du/dt` for MeanFlow |
+| DMF | `logvar_proj` | `0.5·(L_FM + L_MF)`; encoder cond. on t, decoder on r; JVP computes `du/dt` for MeanFlow; EMA (decay=0.9999), eval uses EMA model |
 
 **Data:** LeRobot v2.0 parquet. SMF/SnapFlow/FreeFlow train on `datasets/libero`; **DMF trains on `datasets/libero-plus-training`**. Batch dict: `{observation:{image,image_mask,state}, actions, action_mean, action_std, prompt}`. Raw action dim 7 → padded to 32. Images: parquet→PIL→rotate 180°→resize 256→224 (PIL LANCZOS).
 
@@ -56,7 +56,7 @@ bash scripts/train.sh configs/train/<config>.yaml --resume <ckpt>  # resume
 
 | Method | Finetuned dir |
 |--------|--------------|
-| SMF | (eval defaults to the base `checkpoints/smf_base/pi05_libero`) |
+| SMF | (eval defaults to the base `checkpoints/pi05_libero`) |
 | SnapFlow | `checkpoints/snapflow_finetuned/step_N` |
 | FreeFlow | `freeflow/checkpoints/finetuned/freeflow/step_N` |
 | DMF | `checkpoints/dmf_finetuned/step_N` |
@@ -75,7 +75,7 @@ eval/scripts/eval_utils.py        # THE core: load_policy() + detect_checkpoint_
 
 | Keys present | Inferred method |
 |--------------|-----------------|
-| `t_time_mlp` + `r_time_mlp` | DMF |
+| `logvar_proj` | DMF |
 | `target_time_mlp` | SnapFlow |
 | `time_proj` | SMF |
 | `time_mlp_in` + nested `{'model':...}` | FreeFlow |
