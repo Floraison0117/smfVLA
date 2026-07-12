@@ -154,7 +154,7 @@ def compute_freeflow_loss(
 
     Algorithm:
     1. Sample z_1 ~ N(0, I) from prior (data-free!)
-    2. Get teacher's multi-step integration path: z_0^T = Euler(teacher, z_1, steps=teacher_nfe)
+    2. Get teacher's multi-step integration path: z_0^T = Teacher.sample_actions(z_1, num_steps=teacher_nfe)
     3. Get student prediction: z_0^S = z_1 - Student(z_1, t=1, r=0)
     4. Path loss: ||z_0^S - z_0^T||²
 
@@ -183,10 +183,10 @@ def compute_freeflow_loss(
         metrics: Dictionary of loss components
 
     Note:
-        Teacher function and parameters must be set via
+        Teacher model must be set via
         freeflow.training.teacher_integration.set_teacher() before calling.
     """
-    rng_noise, rng_correction = jax.random.split(rng)
+    rng_noise, rng_teacher, rng_correction = jax.random.split(rng, 3)
 
     # Step 1: Sample from prior (data-free!)
     z_1 = sample_from_prior(
@@ -198,13 +198,14 @@ def compute_freeflow_loss(
 
     # Step 2: Get teacher's multi-step integration path
     # Teacher is frozen, so no gradients flow through it
-    z_0_teacher = teacher_euler_integration(
+    # Teacher π₀.₅ operates in normalized space (trained on normalized actions),
+    # so its output is already normalized
+    z_0_teacher_norm = teacher_euler_integration(
         observation=observation,
         z_1=z_1,
         num_steps=teacher_nfe,
+        rng=rng_teacher,
     )
-    # Normalize for comparison
-    z_0_teacher_norm = (z_0_teacher - action_mean[None, None, :]) / (action_std[None, None, :] + 1e-8)
 
     # Step 3: Student's 1-step prediction (from z_1 to z_0)
     # For 1-NFE: r=0, t=1 means "velocity from t=1 to t=0"

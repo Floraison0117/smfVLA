@@ -42,8 +42,8 @@ class FreeFlowTrainer:
     def __init__(
         self,
         model: nnx.Module,
-        teacher_fn: Any,
-        teacher_params: Any,
+        teacher_fn: Any = None,
+        teacher_params: Any = None,
         learning_rate: float = 2.5e-5,
         weight_decay: float = 0.01,
         warmup_steps: int = 500,
@@ -68,8 +68,8 @@ class FreeFlowTrainer:
 
         Args:
             model: Student model (trainable)
-            teacher_fn: Teacher model function (frozen)
-            teacher_params: Teacher parameters (frozen)
+            teacher_fn: Teacher model function (frozen, optional - use global teacher if None)
+            teacher_params: Teacher parameters (frozen, optional - use global teacher if None)
             learning_rate: Peak learning rate
             weight_decay: AdamW weight decay
             warmup_steps: Linear warmup steps

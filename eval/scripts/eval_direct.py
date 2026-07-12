@@ -216,8 +216,8 @@ def main():
                         help="Skip video recording (useful for full eval to save disk)")
     parser.add_argument("--no-smf", action="store_true",
                         help="Use original Pi05 model (instead of SMF) for any NFE")
-    parser.add_argument("--model-type", type=str, default="smf", choices=["smf", "snapflow", "freeflow"],
-                        help="Model type: 'smf', 'snapflow', 'freeflow', or original (use --no-smf)")
+    parser.add_argument("--model-type", type=str, default="smf", choices=["smf", "snapflow", "freeflow", "dmf"],
+                        help="Model type: 'smf', 'snapflow', 'freeflow', 'dmf', or original (use --no-smf)")
     args = parser.parse_args()
 
     # 应用预设覆盖

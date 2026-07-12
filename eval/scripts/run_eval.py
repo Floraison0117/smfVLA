@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # 获取脚本所在目录
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 EVAL_ROOT = SCRIPT_DIR.parent
+# PROJECT_ROOT points to autodl-tmp/ (where checkpoints/ and freeflow/ are located)
 PROJECT_ROOT = EVAL_ROOT.parent
 
 
@@ -54,11 +55,35 @@ def get_default_checkpoint(model_type: str, dataset: str) -> str:
         # SMF 使用 base checkpoint
         return str(PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero")
     elif model_type == "snapflow":
-        # SnapFlow 也使用 base checkpoint (软链接到 smf_base)
-        return str(PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero")
+        # SnapFlow finetuned checkpoints at checkpoints/snapflow_finetuned/step_N
+        snapflow_ckpt_dir = PROJECT_ROOT / "checkpoints" / "snapflow_finetuned"
+        # Return the latest step
+        if snapflow_ckpt_dir.exists():
+            steps = [d for d in snapflow_ckpt_dir.iterdir() if d.name.startswith("step_")]
+            if steps:
+                return str(max(steps, key=lambda p: int(p.name.split("_")[1])))
+        # Fallback to base checkpoint
+        return str(PROJECT_ROOT / "checkpoints" / "snapflow_base" / "pi05_libero")
     elif model_type == "freeflow":
-        # FreeFlow 使用 base checkpoint
-        return str(PROJECT_ROOT / "checkpoints" / "freeflow" / "pi05_libero")
+        # FreeFlow checkpoints at freeflow/checkpoints/finetuned/freeflow/step_N
+        freeflow_ckpt_dir = PROJECT_ROOT / "freeflow" / "checkpoints" / "finetuned" / "freeflow"
+        # Return the latest step
+        if freeflow_ckpt_dir.exists():
+            steps = [d for d in freeflow_ckpt_dir.iterdir() if d.name.startswith("step_")]
+            if steps:
+                return str(max(steps, key=lambda p: int(p.name.split("_")[1])))
+        # Fallback to SMF base checkpoint
+        return str(PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero")
+    elif model_type == "dmf":
+        # DMF finetuned checkpoints at checkpoints/dmf_finetuned/step_N
+        dmf_ckpt_dir = PROJECT_ROOT / "checkpoints" / "dmf_finetuned"
+        # Return the latest step
+        if dmf_ckpt_dir.exists():
+            steps = [d for d in dmf_ckpt_dir.iterdir() if d.name.startswith("step_")]
+            if steps:
+                return str(max(steps, key=lambda p: int(p.name.split("_")[1])))
+        # Fallback to SMF base checkpoint
+        return str(PROJECT_ROOT / "checkpoints" / "smf_base" / "pi05_libero")
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -135,6 +160,41 @@ def run_libero_plus_eval(args):
         cmd.extend(["--seed", str(args.seed)])
     if args.replan_steps:
         cmd.extend(["--replan-steps", str(args.replan_steps)])
+    # 添加 model-type
+    cmd.extend(["--model-type", args.model_type])
+
+    logger.info(f"Command: {' '.join(cmd)}")
+    return subprocess.call(cmd)
+
+
+def run_calvin_eval(args):
+    """运行 CALVIN 评估。"""
+    logger.info("=" * 60)
+    logger.info("Running CALVIN Evaluation")
+    logger.info("=" * 60)
+
+    cmd = [
+        sys.executable,
+        str(SCRIPT_DIR / "eval_calvin.py"),
+        "--nfe", str(args.nfe),
+        "--dataset", args.calvin_dataset or "debug",
+    ]
+
+    # 添加 checkpoint
+    if args.checkpoint:
+        cmd.extend(["--checkpoint", args.checkpoint])
+    else:
+        default_ckpt = get_default_checkpoint(args.model_type, "libero")
+        cmd.extend(["--checkpoint", default_ckpt])
+
+    # 添加其他参数
+    cmd.extend(["--model-type", args.model_type])
+    if args.seed:
+        cmd.extend(["--seed", str(args.seed)])
+    if args.calvin_num_sequences:
+        cmd.extend(["--num-sequences", str(args.calvin_num_sequences)])
+    if args.debug:
+        cmd.append("--debug")
 
     logger.info(f"Command: {' '.join(cmd)}")
     return subprocess.call(cmd)
@@ -155,12 +215,16 @@ def main():
   # LIBERO-Plus quick 模式 (FreeFlow)
   python run_eval.py --dataset libero-plus --mode quick --nfe 1 --model-type freeflow
 
+  # CALVIN debug 模式
+  python run_eval.py --dataset calvin --calvin-dataset debug --nfe 1 --model-type smf
+
   # 自定义 LIBERO 评估
   python run_eval.py --dataset libero --task-suite libero_spatial --num-episodes 10 --nfe 2
 
 数据集说明:
-  libero    - 标准 LIBERO 基准，支持多 episode 评估
+  libero      - 标准 LIBERO 基准，支持多 episode 评估
   libero-plus - LIBERO-Plus 鲁棒性基准，包含扰动任务
+  calvin      - CALVIN 基准，支持多步骤语言条件推理
 
 模式说明 (LIBERO):
   quick     - 快速测试 (libero_spatial, 5 ep)
@@ -173,6 +237,12 @@ def main():
   full      - 完整评估 (4 suites)
   full90    - libero_90 suite
 
+模式说明 (CALVIN):
+  debug     - 使用 debug validation 数据集 (5 sequences)
+  D         - task_D_D 数据集
+  ABC       - task_ABC_D 数据集
+  ABCD      - task_ABCD_D 数据集
+
 NFE 说明:
   1  - 1 步推理 (SMF/SnapFlow/FreeFlow)
   2  - 2 步推理
@@ -183,7 +253,7 @@ NFE 说明:
 
     # 数据集选择
     parser.add_argument("--dataset", type=str, required=True,
-                        choices=["libero", "libero-plus"],
+                        choices=["libero", "libero-plus", "calvin"],
                         help="选择评估数据集")
 
     # 模式选择
@@ -204,7 +274,7 @@ NFE 说明:
     parser.add_argument("--nfe", type=int, default=1, choices=[1, 2, 4, 10],
                         help="Number of Function Evaluations")
     parser.add_argument("--model-type", type=str, default="smf",
-                        choices=["smf", "snapflow", "freeflow"],
+                        choices=["smf", "snapflow", "freeflow", "dmf"],
                         help="模型类型")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Checkpoint 目录路径")
@@ -213,6 +283,13 @@ NFE 说明:
     parser.add_argument("--replan-steps", type=int, default=5,
                         help="Replan 步数")
 
+    # CALVIN 特定参数
+    parser.add_argument("--calvin-dataset", type=str, default="debug",
+                        choices=["debug", "D", "ABC", "ABCD"],
+                        help="CALVIN 数据集变体")
+    parser.add_argument("--calvin-num-sequences", type=int, default=None,
+                        help="CALVIN 评估序列数")
+
     args = parser.parse_args()
 
     # 根据 dataset 选择评估脚本
@@ -220,6 +297,8 @@ NFE 说明:
         return run_libero_eval(args)
     elif args.dataset == "libero-plus":
         return run_libero_plus_eval(args)
+    elif args.dataset == "calvin":
+        return run_calvin_eval(args)
     else:
         parser.error(f"Unknown dataset: {args.dataset}")
 

@@ -37,28 +37,41 @@ data:
   prefetch_size: 2
 
 freeze:
-  - "*siglip*"
-  - "*vit*"
-  - "*token_embedding*"
-  - "*transformer*layers*0*"
-  - "*transformer*layers*1*"
-  - "*transformer*layers*2*"
-  - "*transformer*layers*3*"
-  - "*transformer*layers*4*"
-  - "*transformer*layers*5*"
-  - "*transformer*layers*6*"
-  - "*transformer*layers*7*"
-  - "*transformer*layers*8*"
-  - "*transformer*layers*9*"
-  - "*transformer*layers*10*"
-  - "*transformer*layers*11*"
+  # Freeze VLM backbone (SigLIP vision encoder)
+  - "PaliGemma/img/**"
+  # Freeze token embedding
+  - "PaliGemma/llm/embedder/**"
+  # Freeze VLM final norm (no _1 suffix)
+  - "PaliGemma/llm/final_norm/scale"
+  # Freeze VLM attention (no _1 suffix)
+  - "PaliGemma/llm/layers/attn/q_einsum/w"
+  - "PaliGemma/llm/layers/attn/kv_einsum/w"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
+  # Freeze VLM MLP (no _1 suffix)
+  - "PaliGemma/llm/layers/mlp/gating_einsum"
+  - "PaliGemma/llm/layers/mlp/linear"
+  # Freeze VLM norm (no _1 suffix)
+  - "PaliGemma/llm/layers/pre_attention_norm/scale"
+  - "PaliGemma/llm/layers/pre_ffw_norm/scale"
 
 trainable:
-  - "*transformer*layers*1*"
-  - "*action_in_proj*"
-  - "*action_out_proj*"
-  - "*time_mlp*"
-  - "*time_proj*"
+  # Action expert attention (_1 suffix)
+  - "PaliGemma/llm/layers/attn/q_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
+  # Action expert MLP (_1 suffix)
+  - "PaliGemma/llm/layers/mlp_1/**"
+  # Action expert norm (_1 suffix)
+  - "PaliGemma/llm/layers/pre_attention_norm_1/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
+  # Action expert final norm
+  - "PaliGemma/llm/final_norm_1/**"
+  # Action projection
+  - "action_in_proj/**"
+  - "action_out_proj/**"
+  # Time MLP (FreeFlow specific)
+  - "time_mlp_in/**"
+  - "time_mlp_out/**"
 
 checkpointing:
   base_checkpoint: ../checkpoints/base/pi05_libero

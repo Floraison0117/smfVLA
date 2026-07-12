@@ -1,23 +1,20 @@
 """
 FreeFlow training entry point.
 
-Called by scripts/train.sh: python -m freeflow.training.run_train
+Training setup:
+- Teacher: Frozen π₀.₅ model (NFE=10)
+- Student: FreeFlow model (NFE=1) initialized from π₀.₅
 """
 
 import argparse
-import json
 import logging
-import os
-import sys
 from datetime import datetime
 from pathlib import Path
 
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
-import optax
 import wandb
-import yaml
 
 from freeflow.config.default_config import FreeFlowConfig
 from freeflow.models.pi05_freeflow import Pi05FreeFlow, create_freeflow_model
@@ -33,35 +30,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_base_model(config: FreeFlowConfig):
+def load_pi05_teacher(config: FreeFlowConfig):
     """
-    Load base π₀.₅ model from checkpoint.
+    Load true π₀.₅ teacher model from checkpoint.
 
-    This will serve as both teacher (frozen) and student initialization.
+    Returns a Pi0 model (not FreeFlow) for teacher inference.
     """
     from openpi.models.model import restore_params
-    from openpi.models import pi0_config
+    from openpi.models import pi0_config, pi0
 
-    # Path to base checkpoint
     base_ckpt = Path(config.checkpointing.base_checkpoint)
+    logger.info(f"Loading π₀.₅ teacher from: {base_ckpt}")
 
-    logger.info(f"Loading base checkpoint from: {base_ckpt}")
-
-    # Load model parameters using openpi's restore_params
-    # This handles multi-device → single-device conversion
+    # Load parameters
     params = restore_params(
         base_ckpt / "params",
         restore_type=jnp.ndarray,
         dtype=jnp.bfloat16,
     )
 
-    # Create FreeFlow model
-    # NOTE: Checkpoint analysis shows:
-    # - Vision encoder: SigLIP with 1152 hidden dim (standard)
-    # - LLM width: 2048 (gemma_2b)
-    # - Action expert width: 1024 (gemma_300m)
-    # So we use paligemma_variant="gemma_2b" for vision→LLM projection
-    # and action_expert_variant="gemma_300m" for action expert
+    # Create π₀.₅ model (Pi0, not FreeFlow)
     model_config = pi0_config.Pi0Config(
         paligemma_variant="gemma_2b",
         action_expert_variant="gemma_300m",
@@ -69,10 +57,12 @@ def load_base_model(config: FreeFlowConfig):
         action_dim=config.model.action_dim,
         action_horizon=config.model.action_horizon,
     )
-    model = create_freeflow_model(model_config)
+
+    # Create Pi0 model
+    teacher_model = pi0.Pi0(model_config, nnx.Rngs(0))
 
     # Load parameters
-    graphdef, state = nnx.split(model)
+    graphdef, state = nnx.split(teacher_model)
     pure_state = state.to_pure_dict()
 
     import flax.traverse_util as traverse_util
@@ -84,18 +74,66 @@ def load_base_model(config: FreeFlowConfig):
         if key in flat_params:
             flat_state[key] = flat_params[key]
             loaded_count += 1
-        elif "time_proj" in "/".join(key) or "student_head" in "/".join(key):
-            logger.info(f"Keeping initialized: {'/'.join(key)}")
         else:
-            logger.warning(f"Not in checkpoint: {'/'.join(key)}")
+            logger.warning(f"Teacher param not in checkpoint: {'/'.join(str(k) for k in key)}")
 
-    logger.info(f"Loaded {loaded_count} parameters from base checkpoint")
+    logger.info(f"Teacher loaded: {loaded_count} parameters")
 
     pure_state = traverse_util.unflatten_dict(flat_state)
     state.replace_by_pure_dict(pure_state)
-    model = nnx.merge(graphdef, state)
+    teacher_model = nnx.merge(graphdef, state)
 
-    return model, params
+    return teacher_model, params
+
+
+def load_freeflow_student(config: FreeFlowConfig, teacher_params):
+    """
+    Load FreeFlow student model initialized from π₀.₅ checkpoint.
+
+    Args:
+        config: FreeFlow config
+        teacher_params: π₀.₅ checkpoint parameters (for initialization)
+
+    Returns:
+        FreeFlow student model
+    """
+    from openpi.models import pi0_config
+
+    logger.info("Creating FreeFlow student model...")
+
+    model_config = pi0_config.Pi0Config(
+        paligemma_variant="gemma_2b",
+        action_expert_variant="gemma_300m",
+        pi05=True,
+        action_dim=config.model.action_dim,
+        action_horizon=config.model.action_horizon,
+    )
+
+    student_model = create_freeflow_model(model_config)
+
+    # Initialize from teacher parameters
+    graphdef, state = nnx.split(student_model)
+    pure_state = state.to_pure_dict()
+
+    import flax.traverse_util as traverse_util
+    flat_teacher_params = traverse_util.flatten_dict(teacher_params)
+    flat_state = traverse_util.flatten_dict(pure_state)
+
+    loaded_count = 0
+    for key in flat_state:
+        if key in flat_teacher_params:
+            flat_state[key] = flat_teacher_params[key]
+            loaded_count += 1
+        # FreeFlow-specific params (time_mlp_in/out are shared with Pi0, so they should load)
+        # If there are truly new params, they stay randomly initialized
+
+    logger.info(f"Student initialized: {loaded_count} parameters from teacher")
+
+    pure_state = traverse_util.unflatten_dict(flat_state)
+    state.replace_by_pure_dict(pure_state)
+    student_model = nnx.merge(graphdef, state)
+
+    return student_model
 
 
 def main():
@@ -129,36 +167,24 @@ def main():
     )
     logger.info("WandB initialized successfully")
 
-    # Load base model (serves as teacher + student initialization)
-    logger.info("Loading base π₀.₅ model...")
-    model, base_params = load_base_model(config)
-    logger.info("Base model loaded successfully")
+    # Step 1: Load π₀.₅ teacher (frozen, for Euler integration)
+    logger.info("=" * 60)
+    logger.info("Step 1: Loading π₀.₅ teacher model...")
+    teacher_model, teacher_params = load_pi05_teacher(config)
+    logger.info("π₀.₅ teacher loaded successfully")
 
-    # Create teacher forward function (frozen π₀.₅)
-    def teacher_fn(params, obs, z, t, r):
-        """Teacher forward function (frozen π₀.₅).
+    # Step 2: Create FreeFlow student (trainable)
+    logger.info("Step 2: Creating FreeFlow student model...")
+    student_model = load_freeflow_student(config, teacher_params)
+    logger.info("FreeFlow student created successfully")
 
-        Args:
-            params: Model parameters (unused, passed for JIT compatibility)
-            obs: Observation (images, state, prompt)
-            z: Noisy action (z_t)
-            t: Current timestep
-            r: Reference timestep (for flow matching)
+    # Step 3: Set teacher for Euler integration
+    logger.info("Step 3: Setting teacher for Euler integration...")
+    set_teacher(teacher_model)
+    logger.info("Teacher set successfully")
 
-        Returns:
-            Predicted velocity
-        """
-        # Use the merged model for teacher inference
-        # The model is already loaded with parameters
-        return model(obs, z, t, r)
-
-    # Set teacher globally for JIT-compiled integration
-    logger.info("Setting teacher function...")
-    set_teacher(teacher_fn, base_params)
-    logger.info("Teacher function set successfully")
-
-    # Create data loader
-    logger.info(f"Loading data from: {config.data.dataset_path}")
+    # Step 4: Create data loader
+    logger.info("Step 4: Creating data loader...")
     data_loader = create_data_loader(
         dataset_path=config.data.dataset_path,
         batch_size=config.training.batch_size,
@@ -169,20 +195,17 @@ def main():
     )
     logger.info("Data loader created successfully")
 
-    # Create trainer
-    logger.info("Creating trainer...")
+    # Step 5: Create trainer
+    logger.info("Step 5: Creating trainer...")
     log_dir = Path(config.checkpointing.save_dir).parent / "logs" / "train" / "freeflow"
     log_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Log directory: {log_dir}")
 
-    # Create trainer
-    # Note: We pass teacher_fn and base_params (frozen π₀.₅)
-    # The model itself will be trained as student
-    logger.info("Initializing FreeFlowTrainer...")
+    # Note: trainer doesn't need teacher_fn anymore
+    # The teacher is set globally and used by teacher_euler_integration
     trainer = FreeFlowTrainer(
-        model=model,
-        teacher_fn=teacher_fn,
-        teacher_params=base_params,
+        model=student_model,
+        teacher_fn=None,  # Not used, teacher is global
+        teacher_params=None,  # Not used
         learning_rate=config.training.learning_rate,
         weight_decay=config.optimizer.weight_decay,
         warmup_steps=config.training.warmup_steps,
@@ -200,7 +223,7 @@ def main():
         freeze_patterns=config.freeze,
         trainable_patterns=config.trainable,
     )
-    logger.info("FreeFlowTrainer initialized successfully")
+    logger.info("Trainer created successfully")
 
     # Resume from checkpoint if specified
     start_step = 0

@@ -1,0 +1,39 @@
+{
+  "benchmark": "libero-plus",
+  "preset": "quick",
+  "nfe_values": [
+    1
+  ],
+  "max_tasks": 10,
+  "task_offset": 0,
+  "suites": {
+    "libero_spatial_nfe1": {
+      "total_success_rate": 0.78,
+      "total_episodes": 50,
+      "total_successes": 39
+    },
+    "libero_object_nfe1": {
+      "total_success_rate": 0.92,
+      "total_episodes": 50,
+      "total_successes": 46
+    },
+    "libero_goal_nfe1": {
+      "total_success_rate": 0.08,
+      "total_episodes": 50,
+      "total_successes": 4
+    },
+    "libero_10_nfe1": {
+      "total_success_rate": 0.6,
+      "total_episodes": 50,
+      "total_successes": 30
+    }
+  },
+  "grand_total_episodes": 200,
+  "grand_total_successes": 119,
+  "metadata": {
+    "end_time": "2026-06-13T19:31:00.250752",
+    "hostname": "autodl-container-lezfbu0bdx-2f5bc1be",
+    "checkpoint": "/root/autodl-tmp/freeflow/checkpoints/finetuned/freeflow/step_15000"
+  },
+  "grand_total_rate": 0.595
+}

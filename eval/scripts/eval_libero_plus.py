@@ -20,6 +20,7 @@ LIBERO-Plus 评测脚本：在 LIBERO-Plus 鲁棒性基准上评测 pi05-libero 
 
 import argparse
 import datetime
+import gc
 import json
 import logging
 import os
@@ -29,6 +30,18 @@ import sys
 import time
 
 import numpy as np
+
+# ── JAX Memory Cleanup ──────────────────────────────────────
+def clear_jax_cache():
+    """Clear JAX GPU memory cache to prevent OOM during long evals."""
+    try:
+        import jax
+        # Clear XLA compilation cache
+        jax.clear_backends()
+        # Force Python garbage collection
+        gc.collect()
+    except Exception as e:
+        logger.warning(f"Failed to clear JAX cache: {e}")
 
 # ── 设置路径 ──────────────────────────────────────────────
 from eval_utils import (
@@ -53,7 +66,8 @@ import yaml as _yaml
 _libero_plus_config = {
     "benchmark_root": str(LIBERO_PLUS_BENCHMARK),
     "bddl_files": str(LIBERO_PLUS_BENCHMARK / "bddl_files"),
-    "init_states": str(LIBERO_PLUS_BENCHMARK / "init_files"),
+    "init_files": str(LIBERO_PLUS_BENCHMARK / "init_files"),
+    "init_states": str(LIBERO_PLUS_BENCHMARK / "init_files"),  # init_states points to init_files
     "datasets": str(LIBERO_PLUS_DIR.parent / "datasets"),
     "assets": str(LIBERO_PLUS_BENCHMARK / "assets"),
 }
@@ -61,9 +75,11 @@ with open(LIBERO_PLUS_CONFIG_FILE, "w") as f:
     _yaml.dump(_libero_plus_config, f)
 os.environ["LIBERO_CONFIG_PATH"] = str(LIBERO_PLUS_CONFIG_DIR)
 
-# 优先加载 libero-plus（替换原始 libero）
-sys.path.insert(0, str(LIBERO_PLUS_DIR.parent))
+# Set up paths first
 setup_paths()
+# Then insert libero-plus at the front to override original libero
+# Note: LIBERO_PLUS_DIR is the directory containing the libero package (LIBERO-plus/)
+sys.path.insert(0, str(LIBERO_PLUS_DIR))
 
 from libero.libero import benchmark
 from libero.libero import get_libero_path
@@ -207,6 +223,9 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
                     "avg_latency_ms": round(float(np.mean(ep_latencies)), 2) if ep_latencies else 0.0,
                 })
 
+                # Clear JAX cache after each episode to prevent OOM
+                clear_jax_cache()
+
             except Exception as e:
                 logger.warning(f"Task {task_id} Ep {episode_idx+1} failed with error: {e}")
                 episode_details.append({
@@ -236,6 +255,8 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
         }
 
         env.close()
+        # Clear JAX cache after each task to prevent OOM
+        clear_jax_cache()
 
     # 汇总
     end_time = time.time()
@@ -313,8 +334,8 @@ Examples:
                         default=str(PROJECT_ROOT / "eval" / "results" / "smf" / "libero_plus"),
                         help="Directory to save results")
     parser.add_argument("--model-type", type=str, default="smf",
-                        choices=["smf", "snapflow", "freeflow"],
-                        help="Model type: smf, snapflow, freeflow, or original (use --no-smf)")
+                        choices=["smf", "snapflow", "freeflow", "dmf"],
+                        help="Model type: smf, snapflow, freeflow, dmf, or original (use --no-smf)")
     parser.add_argument("--no-smf", action="store_true",
                         help="Use original Pi05 model (instead of SMF) for any NFE")
     parser.add_argument("--num-episodes", type=int, default=None,
