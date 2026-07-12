@@ -56,8 +56,10 @@ class SMFTrainer:
         wandb_run_name: str | None = None,
         wandb_config: dict[str, Any] | None = None,
         train_config: dict[str, Any] | None = None,
+        teacher_model: nnx.Module | None = None,
     ):
         self.model = model
+        self.teacher_model = teacher_model
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.warmup_steps = warmup_steps
@@ -79,11 +81,20 @@ class SMFTrainer:
         self.use_anchor = self.train_config.get("use_anchor", False)
         self.use_bpl = self.train_config.get("use_bpl", False)
         self.flow_ratio = self.train_config.get("flow_ratio", 0.3)
+        self.smf_loss_scale = self.train_config.get("smf_loss_scale", 1.0)
 
         # Curriculum 参数
         self.delta_min = self.train_config.get("delta_min", 0.05)
         self.delta_final = self.train_config.get("delta_final", 1.0)
         self.delta_floor = self.train_config.get("delta_floor", 1e-3)
+        self.delta_sampling = self.train_config.get("delta_sampling", "uniform")
+
+        # 动态 SMF scale（梯度匹配）
+        self._is_dynamic_scale = isinstance(self.smf_loss_scale, str) and self.smf_loss_scale == "dynamic"
+        self._smf_scale_ema = 1.0
+        self._smf_scale_ema_alpha = 0.99
+        self._smf_scale_min = 1.0
+        self._smf_scale_max = 200.0
 
         # Anchor 参数
         self.anchor_warmup_steps = self.train_config.get("anchor_warmup_steps", 3000)
@@ -210,13 +221,23 @@ class SMFTrainer:
         logger.info(f"  Trainable: {n_trainable:,} params ({n_trainable/1e6:.1f}M)")
         logger.info(f"  Frozen:    {n_frozen:,} params ({n_frozen/1e6:.1f}M)")
 
+        # ── 拆分 Teacher 模型（如果存在）────────────────────────
+        teacher_graphdef = None
+        teacher_frozen_dict = None
+        if self.teacher_model is not None:
+            teacher_graphdef, teacher_state = nnx.split(self.teacher_model)
+            teacher_flat = teacher_state.flat_state()
+            teacher_frozen_dict = {p: teacher_flat[p] for p in teacher_flat}
+            n_teacher = sum(_size(teacher_flat[p]) for p in teacher_flat)
+            logger.info(f"  Teacher:   {n_teacher:,} params ({n_teacher/1e6:.1f}M) [frozen]")
+
         # ── 捕获到 closure 的变量（JIT 常量）────────────────────
         frozen_dict = self._frozen_dict
         trainable_paths = self._trainable_paths
         trainer = self  # 捕获 self 以访问配置（都是 Python 标量）
 
         # ── loss function: 只对 trainable_values 求导 ────────────
-        def loss_fn(trainable_values, batch, rng, step, alpha_anchor, alpha_bpl):
+        def loss_fn(trainable_values, batch, rng, step, alpha_anchor, alpha_bpl, smf_scale_value):
             from openpi.models.model import Observation
             from openpi.models.pi0 import make_attn_mask
             from smf_vla.training.smf_loss import compute_full_smf_loss
@@ -243,7 +264,7 @@ class SMFTrainer:
                     suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = model.embed_suffix_smf(
                         obs, noisy_actions, t=t, r=r
                     )
-                    adarms_cond = [None, adarms_cond]
+                adarms_cond = [None, adarms_cond]
 
                 suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
                 positions = jnp.cumsum(suffix_mask, axis=1) - 1
@@ -257,6 +278,51 @@ class SMFTrainer:
                 v = model.action_out_proj(suffix_out[:, -model.action_horizon:])
                 return v
 
+            # ── Teacher model（frozen，用于 Anchor / BPL）────────
+            teacher_fn = None
+            teacher_model_wrapper = None
+
+            if teacher_frozen_dict is not None and teacher_graphdef is not None:
+                # 重组 teacher 模型
+                t_st = nnx.State.from_flat_path(teacher_frozen_dict)
+                teacher = nnx.merge(teacher_graphdef, t_st)
+
+                def teacher_fn(params, obs, noisy_actions, r, t):
+                    """Teacher 前向传播（与 student 相同接口）。"""
+                    if trainer.time_conditioning == "decte":
+                        s_tokens, s_mask, s_ar_mask, adarms = teacher.embed_suffix_decte(
+                            obs, noisy_actions, t=t, r=r, encoder_depth=trainer.encoder_depth
+                        )
+                    else:
+                        s_tokens, s_mask, s_ar_mask, adarms = teacher.embed_suffix_smf(
+                            obs, noisy_actions, t=t, r=r
+                        )
+                    adarms = [None, adarms]
+
+                    s_attn_mask = make_attn_mask(s_mask, s_ar_mask)
+                    s_positions = jnp.cumsum(s_mask, axis=1) - 1
+
+                    (_, s_out), _ = teacher.PaliGemma.llm(
+                        [None, s_tokens],
+                        mask=s_attn_mask,
+                        positions=s_positions,
+                        adarms_cond=adarms,
+                    )
+                    v = teacher.action_out_proj(s_out[:, -teacher.action_horizon:])
+                    return v
+
+                # BPL teacher_model wrapper: 实现 extract_hidden_states 接口
+                if trainer.use_bpl:
+                    class _TeacherModelWrapper:
+                        """Teacher wrapper for BPL loss: implements extract_hidden_states."""
+                        def __init__(self, teacher_module):
+                            self._teacher = teacher_module
+
+                        def extract_hidden_states(self, obs, x, layer_indices):
+                            return self._teacher.extract_hidden_states(obs, x, layer_indices)
+
+                    teacher_model_wrapper = _TeacherModelWrapper(teacher)
+
             loss, metrics = compute_full_smf_loss(
                 model_fn=model_fn,
                 params=None,
@@ -268,15 +334,20 @@ class SMFTrainer:
                 step=step,
                 total_steps=trainer.total_steps,
                 flow_ratio=trainer.flow_ratio,
+                smf_loss_scale=trainer.smf_loss_scale,
+                smf_scale_value=smf_scale_value,
                 use_curriculum=trainer.use_curriculum,
                 delta_min=trainer.delta_min,
                 delta_final=trainer.delta_final,
                 delta_floor=trainer.delta_floor,
+                delta_sampling=trainer.delta_sampling,
                 use_anchor=trainer.use_anchor,
                 alpha_anchor=alpha_anchor,
                 anchor_delta_max=trainer.anchor_delta_max,
                 use_bpl=trainer.use_bpl,
                 alpha_bpl=alpha_bpl,
+                teacher_fn=teacher_fn,
+                teacher_model=teacher_model_wrapper,
             )
 
             return loss, metrics
@@ -290,6 +361,86 @@ class SMFTrainer:
         logger.info("JIT 编译完成")
         logger.info("=" * 60)
 
+        # ── 动态 scale: 编译梯度范数计算函数 ───────────────────
+        if self._is_dynamic_scale:
+            logger.info("编译梯度匹配函数（用于动态 SMF scale）...")
+
+            def _grad_norm_fn(trainable_values, batch, rng, step, alpha_anchor, alpha_bpl):
+                """计算 loss_fm 和 loss_smf 各自的梯度范数。"""
+                # scale=0 → grad 只含 loss_fm
+                _, grads_fm = jax.value_and_grad(loss_fn, argnums=0, has_aux=True)(
+                    trainable_values, batch, rng, step, alpha_anchor, alpha_bpl, 0.0,
+                )
+                # scale=1 → grad = grad_smf + grad_fm
+                _, grads_both = jax.value_and_grad(loss_fn, argnums=0, has_aux=True)(
+                    trainable_values, batch, rng, step, alpha_anchor, alpha_bpl, 1.0,
+                )
+                # grad_smf = grad_both - grad_fm
+                def _to_val(x):
+                    return x.value if hasattr(x, 'value') else x
+
+                def _norm(grads):
+                    norms = jnp.array([jnp.linalg.norm(_to_val(g)) for g in grads if g is not None])
+                    return jnp.linalg.norm(norms)
+
+                g_fm = _norm(grads_fm)
+                g_smf = _norm([_to_val(b) - _to_val(f) if b is not None else None for b, f in zip(grads_both, grads_fm)])
+                return g_fm, g_smf
+
+            self._grad_norm_fn = jax.jit(_grad_norm_fn)
+            logger.info("梯度匹配函数编译完成")
+
+    def _update_smf_scale(self, model: nnx.Module, jax_batch: dict, rng: jax.Array, step: int, alpha_anchor: float, alpha_bpl: float) -> float:
+        """
+        计算梯度范数比并更新 smf_scale_ema。
+
+        通过两次反向传播分别计算 loss_fm 和 loss_smf 的梯度范数，
+        用 EMA 平滑更新 scale 值。
+
+        Args:
+            model: 当前模型
+            jax_batch: 已准备好的 JAX batch（包含 observation, actions, action_mean, action_std）
+            rng: 随机数 key
+            step: 当前步数
+            alpha_anchor: anchor loss alpha
+            alpha_bpl: BPL loss alpha
+
+        Returns:
+            更新后的 smf_scale_ema
+        """
+        if not self._is_dynamic_scale:
+            return self._smf_scale_ema
+
+        _, state = nnx.split(model)
+        flat = state.flat_state()
+        trainable_values = [flat[p] for p in self._trainable_paths]
+
+        # 只保留 JIT 需要的 array 值（与 train_step 一致）
+        filtered_batch = {k: v for k, v in jax_batch.items() if k in ("observation", "actions", "action_mean", "action_std")}
+
+        g_fm, g_smf = self._grad_norm_fn(
+            trainable_values, filtered_batch, rng, step, alpha_anchor, alpha_bpl,
+        )
+
+        g_fm = float(g_fm)
+        g_smf = float(g_smf)
+
+        # 计算目标 scale
+        target_ratio = g_fm / (g_smf + 1e-8)
+
+        # EMA 更新
+        self._smf_scale_ema = (
+            self._smf_scale_ema_alpha * self._smf_scale_ema
+            + (1 - self._smf_scale_ema_alpha) * target_ratio
+        )
+
+        # 限制范围
+        self._smf_scale_ema = max(self._smf_scale_min, min(self._smf_scale_max, self._smf_scale_ema))
+
+        logger.debug(f"梯度匹配: g_fm={g_fm:.4f}, g_smf={g_smf:.6f}, ratio={target_ratio:.2f}, ema={self._smf_scale_ema:.2f}")
+
+        return self._smf_scale_ema
+
     def train_step(
         self,
         model: nnx.Module,
@@ -300,6 +451,7 @@ class SMFTrainer:
         step: int,
         alpha_anchor: float,
         alpha_bpl: float,
+        smf_scale_value: float = 1.0,
     ) -> tuple[nnx.Module, optax.OptState, dict[str, float]]:
         """
         单步训练。
@@ -325,7 +477,7 @@ class SMFTrainer:
 
         # ── 前向 + 只对 trainable 求梯度 ─────────────────────
         (loss, metrics), grads = self._grad_fn(
-            trainable_values, jax_batch, rng, step, alpha_anchor, alpha_bpl,
+            trainable_values, jax_batch, rng, step, alpha_anchor, alpha_bpl, smf_scale_value,
         )
 
         # ── 参数更新 ─────────────────────────────────────────
@@ -374,11 +526,14 @@ class SMFTrainer:
                     "total_steps": self.total_steps,
                     "gradient_clip_norm": self.gradient_clip_norm,
                     "flow_ratio": self.flow_ratio,
+                    "smf_loss_scale": self.smf_loss_scale,
                     "time_conditioning": self.time_conditioning,
                     "use_curriculum": self.use_curriculum,
                     "delta_min": self.delta_min,
                     "delta_final": self.delta_final,
                     "delta_floor": self.delta_floor,
+                    "delta_sampling": self.delta_sampling,
+                    "is_dynamic_scale": self._is_dynamic_scale,
                     "use_anchor": self.use_anchor,
                     "use_bpl": self.use_bpl,
                     "encoder_depth": self.encoder_depth,
@@ -411,6 +566,7 @@ class SMFTrainer:
         logger.info(f"梯度裁剪: {self.gradient_clip_norm}")
         logger.info(f"时间条件: {self.time_conditioning}")
         logger.info(f"Curriculum: {self.use_curriculum}")
+        logger.info(f"SMF Loss Scale: {self.smf_loss_scale}")
         logger.info(f"Anchor: {self.use_anchor}")
         logger.info(f"BPL: {self.use_bpl}")
         logger.info(f"Checkpoint 目录: {self.checkpoint_dir}")
@@ -471,11 +627,15 @@ class SMFTrainer:
             alpha_anchor = self._get_anchor_alpha(step) if self.use_anchor else 0.0
             alpha_bpl = self._get_bpl_alpha(step) if self.use_bpl else 0.0
 
+            # 动态 SMF scale: 每 log_every 步更新一次
+            rng, scale_rng = jax.random.split(rng)
+            smf_scale_value = self._update_smf_scale(model, jax_batch, scale_rng, step, alpha_anchor, alpha_bpl)
+
             # 训练 step
             rng, step_rng = jax.random.split(rng)
             model, opt_state, metrics = self.train_step(
                 model, self.optimizer, opt_state, jax_batch, step_rng,
-                step, alpha_anchor, alpha_bpl,
+                step, alpha_anchor, alpha_bpl, smf_scale_value,
             )
 
             # 记录日志
@@ -489,6 +649,7 @@ class SMFTrainer:
             metrics["wall_time"] = time.time() - start_time
             metrics["alpha_anchor"] = alpha_anchor
             metrics["alpha_bpl"] = alpha_bpl
+            metrics["smf_scale_ema"] = self._smf_scale_ema
             self.train_log.append(metrics)
 
             # wandb 记录
@@ -498,8 +659,11 @@ class SMFTrainer:
                 wandb_metrics = {
                     "train/loss_total": metrics["loss_total"],
                     "train/loss_smf": metrics["loss_smf"],
+                    "train/loss_smf_scaled": metrics.get("loss_smf_scaled", metrics["loss_smf"]),
                     "train/loss_fm": metrics["loss_fm"],
                     "train/flow_ratio": metrics.get("flow_ratio_actual", 0),
+                    "train/smf_scale_ema": self._smf_scale_ema,
+                    "train/smf_scale_applied": metrics.get("smf_scale_applied", 1.0),
                     "train/lr": metrics["lr"],
                     "train/wall_time": metrics["wall_time"],
                     "train/grad_norm": metrics.get("grad_norm", 0),
@@ -536,6 +700,8 @@ class SMFTrainer:
                     f"loss={metrics['loss_total']:.4f} | "
                     f"smf={metrics['loss_smf']:.4f} | "
                     f"fm={metrics['loss_fm']:.4f} | "
+                    f"scale={self._smf_scale_ema:.1f} | "
+                    f"delta={metrics.get('delta_mean', 0):.3f} | "
                     f"grad={metrics.get('grad_norm', 0):.4f} | "
                     f"time={elapsed:.1f}s"
                 )
@@ -632,14 +798,17 @@ class SMFTrainer:
         # 加载优化器状态（如果存在）
         opt_state_path = ckpt_path / "opt_state"
         if opt_state_path.exists() and opt_state is not None:
-            restored_opt = checkpointer.restore(str(opt_state_path))
-            # 将恢复的 state 填入当前 opt_state 的 pytree 结构
-            opt_state = jax.tree.map(
-                lambda old, new: new if new is not None else old,
-                opt_state,
-                restored_opt,
-            )
-            logger.info(f"Loaded optimizer state from {opt_state_path}")
+            try:
+                restored_opt = checkpointer.restore(str(opt_state_path))
+                # 将恢复的 state 填入当前 opt_state 的 pytree 结构
+                opt_state = jax.tree.map(
+                    lambda old, new: new if new is not None else old,
+                    opt_state,
+                    restored_opt,
+                )
+                logger.info(f"Loaded optimizer state from {opt_state_path}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Optimizer state structure mismatch (likely due to changed total_steps), using fresh optimizer state: {e}")
         elif opt_state_path.exists():
             logger.warning(f"Opt state found at {opt_state_path} but no opt_state provided, skipping")
         else:
@@ -688,6 +857,7 @@ class SMFTrainer:
                 "batch_size": self.train_config.get("batch_size"),
                 "precision": self.train_config.get("precision"),
                 "flow_ratio": self.flow_ratio,
+                "smf_loss_scale": self.smf_loss_scale,
                 "time_conditioning": self.time_conditioning,
                 "use_curriculum": self.use_curriculum,
                 "delta_min": self.delta_min,
@@ -702,6 +872,7 @@ class SMFTrainer:
             "results": {
                 "final_loss_total": final_metrics.get("loss_total"),
                 "final_loss_smf": final_metrics.get("loss_smf"),
+                "final_loss_smf_scaled": final_metrics.get("loss_smf_scaled", final_metrics.get("loss_smf")),
                 "final_loss_fm": final_metrics.get("loss_fm"),
                 "final_loss_anchor": final_metrics.get("loss_anchor", 0),
                 "final_loss_bpl": final_metrics.get("loss_bpl", 0),

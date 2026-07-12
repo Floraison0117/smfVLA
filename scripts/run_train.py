@@ -11,7 +11,14 @@ sys.path.insert(0, os.path.join(openpi_dir, "src"))
 
 import yaml
 import logging
+
+# ── JAX 内存限制配置 ─────────────────────────────────────────────────
+# 限制 JAX 编译缓存大小，防止 RAM 占用过高
+os.environ['JAX_COMPILATION_CACHE_MAX_SIZE'] = '134217728'  # 128MB
+
 import jax
+jax.config.update('jax_compilation_cache_max_size', 128 * 1024 * 1024)
+
 import flax.nnx as nnx
 from pathlib import Path
 
@@ -80,6 +87,40 @@ def main():
     model = nnx.merge(graphdef, state)
     logger.info("模型加载完成")
 
+    # ── 加载 Teacher 模型（用于 Anchor / BPL）──────────────────
+    teacher_model = None
+    use_anchor = config.get("use_anchor", False)
+    use_bpl = config.get("use_bpl", False)
+
+    if use_anchor or use_bpl:
+        teacher_ckpt = Path(config.get("teacher_path", config["checkpoint"]))
+        logger.info(f"加载 Teacher 模型: {teacher_ckpt / 'params'}...")
+
+        teacher_model = smf_config.create(jax.random.key(1))
+        teacher_graphdef, teacher_state = nnx.split(teacher_model)
+        teacher_pure = teacher_state.to_pure_dict()
+
+        flat_teacher = traverse_util.flatten_dict(teacher_pure)
+        flat_ckpt = traverse_util.flatten_dict(params)  # 复用已加载的 checkpoint params
+
+        teacher_loaded = 0
+        for key in flat_teacher:
+            str_key = "/".join(key)
+            if key in flat_ckpt:
+                flat_teacher[key] = flat_ckpt[key]
+                teacher_loaded += 1
+            elif "time_proj" in str_key:
+                logger.info(f"Teacher 跳过新增参数: {str_key}")
+            else:
+                logger.warning(f"Teacher 未找到: {str_key}")
+
+        logger.info(f"Teacher 加载了 {teacher_loaded} 个参数")
+
+        teacher_pure = traverse_util.unflatten_dict(flat_teacher)
+        teacher_state.replace_by_pure_dict(teacher_pure)
+        teacher_model = nnx.merge(teacher_graphdef, teacher_state)
+        logger.info("Teacher 模型加载完成")
+
     # 创建训练器
     from smf_vla.training.jax_trainer import SMFTrainer
 
@@ -98,6 +139,7 @@ def main():
         wandb_run_name=config.get("wandb", {}).get("run_name"),
         wandb_config=config.get("wandb", {}),
         train_config=config,
+        teacher_model=teacher_model,
     )
 
     # 创建数据加载器

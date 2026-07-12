@@ -205,6 +205,7 @@ def sample_r_t_curriculum(
     delta_min: float = 0.05,
     delta_final: float = 1.0,
     delta_floor: float = 1e-3,
+    delta_sampling: str = "uniform",
 ) -> tuple[at.Float[at.Array, " b"], at.Float[at.Array, " b"], at.Bool[at.Array, " b"], dict[str, at.Float[at.Array, ""]]]:
     """
     Curriculum Time Sampling: 训练初期限制时间间隔，逐渐放宽。
@@ -218,6 +219,9 @@ def sample_r_t_curriculum(
         delta_min: 最小时间间隔
         delta_final: 最终最大时间间隔
         delta_floor: 最小有效间隔
+        delta_sampling: 采样策略，"uniform" 或 "biased"
+            - "uniform": delta ~ Uniform(0, delta_upper)，原行为
+            - "biased": delta = delta_upper * (1 - u^(1/k))，k=2，delta 偏向大值
 
     Returns:
         r, t, m, info_dict
@@ -233,10 +237,19 @@ def sample_r_t_curriculum(
     # t ~ Uniform(0, 1)
     t = jax.random.uniform(rng_t, (batch_size,), minval=0.0, maxval=1.0)
 
-    # delta ~ Uniform(delta_floor, min(t, delta_max))
+    # delta_upper = min(t, delta_max)
     delta_upper = jnp.minimum(t, delta_max)
-    delta = jax.random.uniform(rng_delta, (batch_size,), minval=delta_floor, maxval=1.0) * delta_upper
-    delta = jnp.maximum(delta, delta_floor)  # 确保 >= delta_floor
+
+    if delta_sampling == "biased":
+        # delta = delta_upper * (1 - u^(1/k))，k=2
+        # 期望 ≈ 0.67 * delta_upper，delta 偏向大值
+        u = jax.random.uniform(rng_delta, (batch_size,), minval=0.0, maxval=1.0)
+        delta = delta_upper * (1.0 - jnp.power(u, 1.0 / 2.0))
+        delta = jnp.maximum(delta, delta_floor)  # 确保 >= delta_floor
+    else:
+        # 原逻辑: delta ~ Uniform(delta_floor, delta_upper)
+        delta = jax.random.uniform(rng_delta, (batch_size,), minval=delta_floor, maxval=1.0) * delta_upper
+        delta = jnp.maximum(delta, delta_floor)  # 确保 >= delta_floor
 
     # r = t - delta
     r = t - delta
@@ -371,11 +384,14 @@ def compute_full_smf_loss(
     total_steps: int = 15000,
     # SMF 基础参数
     flow_ratio: float = 0.3,
+    smf_loss_scale: float = 1.0,
+    smf_scale_value: float = 1.0,
     # Curriculum 参数
     use_curriculum: bool = False,
     delta_min: float = 0.05,
     delta_final: float = 1.0,
     delta_floor: float = 1e-3,
+    delta_sampling: str = "uniform",
     # Anchor 参数
     teacher_fn: Any = None,
     use_anchor: bool = False,
@@ -389,7 +405,10 @@ def compute_full_smf_loss(
     """
     统一的 SMF 损失函数，支持所有训练方法变体。
 
-    loss_total = loss_smf + loss_fm + alpha_anchor * loss_anchor + alpha_bpl * loss_bpl
+    loss_total = smf_scale * loss_smf + loss_fm + alpha_anchor * loss_anchor + alpha_bpl * loss_bpl
+
+    当 smf_loss_scale == "dynamic" 时，使用 smf_scale_value（由 trainer 通过梯度匹配 EMA 计算）。
+    当 smf_loss_scale 为 float 时，直接使用该值。
 
     Args:
         model_fn: student 模型 f(params, obs, z, r, t) → velocity
@@ -401,8 +420,11 @@ def compute_full_smf_loss(
         step: 当前训练步数
         total_steps: 总训练步数
         flow_ratio: r=t 的概率
+        smf_loss_scale: SMF loss 的缩放系数，float 或 "dynamic"
+        smf_scale_value: 动态 scale 值（仅当 smf_loss_scale=="dynamic" 时使用）
         use_curriculum: 是否使用 curriculum time sampling
         delta_min/delta_final/delta_floor: curriculum 参数
+        delta_sampling: delta 采样策略，"uniform" 或 "biased"
         teacher_fn: frozen teacher 模型（anchor loss 用）
         use_anchor: 是否使用 anchor loss
         alpha_anchor: anchor loss 权重
@@ -426,7 +448,8 @@ def compute_full_smf_loss(
     # Step 3: 采样时间 (r, t)
     if use_curriculum:
         r, t, m, curriculum_info = sample_r_t_curriculum(
-            rng_sample, batch_size, step, total_steps, flow_ratio, delta_min, delta_final, delta_floor
+            rng_sample, batch_size, step, total_steps, flow_ratio,
+            delta_min, delta_final, delta_floor, delta_sampling,
         )
     else:
         r, t, m = sample_r_t(rng_sample, batch_size, flow_ratio)
@@ -457,12 +480,21 @@ def compute_full_smf_loss(
     loss_fm = jnp.sum(loss_fm_per_sample * m) / jnp.maximum(jnp.sum(m), 1)
 
     # ── 总损失 ─────────────────────────────────────
-    loss_total = loss_smf + loss_fm
+    # 确定实际使用的 scale
+    is_dynamic = isinstance(smf_loss_scale, str) and smf_loss_scale == "dynamic"
+    if is_dynamic:
+        actual_scale = smf_scale_value
+    else:
+        actual_scale = float(smf_loss_scale)
+    loss_smf_scaled = actual_scale * loss_smf
+    loss_total = loss_smf_scaled + loss_fm
 
     metrics = {
         "loss_total": loss_total,
         "loss_smf": loss_smf,
+        "loss_smf_scaled": loss_smf_scaled,
         "loss_fm": loss_fm,
+        "smf_scale_applied": actual_scale,
         "flow_ratio_actual": jnp.mean(m.astype(jnp.float32)),
         "t_mean": jnp.mean(t),
         "r_mean": jnp.mean(r),
@@ -471,7 +503,8 @@ def compute_full_smf_loss(
     }
 
     # ── Anchor Loss ────────────────────────────────
-    if use_anchor and teacher_fn is not None and alpha_anchor > 0:
+    # 始终计算 anchor loss（避免 JIT 中 Python if 对 traced array 的 bool 转换）
+    if use_anchor and teacher_fn is not None:
         loss_anchor, anchor_metrics = compute_anchor_loss(
             model_fn=model_fn,
             teacher_fn=teacher_fn,
@@ -491,7 +524,8 @@ def compute_full_smf_loss(
         metrics["anchor_active_ratio"] = jnp.float32(0.0)
 
     # ── BPL Loss ───────────────────────────────────
-    if use_bpl and teacher_model is not None and alpha_bpl > 0:
+    # 始终计算 BPL loss（避免 JIT 中 Python if 对 traced array 的 bool 转换）
+    if use_bpl and teacher_model is not None:
         # 1-step 预测
         r_zero = jnp.zeros(batch_size)
         t_one = jnp.ones(batch_size)

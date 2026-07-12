@@ -126,10 +126,10 @@ def _rotate_180(img: np.ndarray) -> np.ndarray:
 def _resize_224(img: np.ndarray) -> np.ndarray:
     """
     使用 PIL 将 256×256 图像 resize 到 224×224。
-    使用 LANCZOS 重采样。正方形图像不需要 padding。
+    使用 BILINEAR 重采样（比 LANCZOS 快 3-5 倍）。
     """
     pil_img = Image.fromarray(img)
-    pil_img = pil_img.resize((224, 224), Image.LANCZOS)
+    pil_img = pil_img.resize((224, 224), Image.BILINEAR)
     return np.array(pil_img, dtype=np.uint8)
 
 
@@ -145,6 +145,94 @@ def _process_image(raw: dict | bytes) -> np.ndarray:
 # data loader
 # ---------------------------------------------------------------------------
 
+def _detect_format(dataset_path: pathlib.Path) -> dict[str, str]:
+    """
+    检测数据集格式（LeRobot v2.0 vs v2.1），返回列名映射。
+
+    v2.0: image, wrist_image, state, actions (images in parquet)
+    v2.1: observation.state, action (images in videos/ as mp4 files)
+
+    Returns:
+        dict with keys: image, wrist_image, state, actions, format
+    """
+    # 检查是否有 videos 目录（v2.1 特征）
+    videos_dir = dataset_path / "videos"
+    has_videos = videos_dir.exists() and any(videos_dir.iterdir())
+
+    # 读取第一个 parquet 文件检测列名
+    data_dir = dataset_path / "data"
+    first_chunk = data_dir / "chunk-000"
+    parquet_files = sorted(first_chunk.glob("episode_*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(f"No parquet files in {first_chunk}")
+
+    sample_df = pd.read_parquet(parquet_files[0], columns=None)
+    cols = set(sample_df.columns)
+
+    # 检测格式
+    has_image_col = "image" in cols
+    has_state_v21 = "observation.state" in cols
+
+    if has_image_col:
+        # v2.0 format: images in parquet
+        logger.info("检测到 LeRobot v2.0 格式（Parquet 图像）")
+        return {
+            "image": "image",
+            "wrist_image": "wrist_image",
+            "state": "state",
+            "actions": "actions",
+            "format": "v2.0",
+        }
+    elif has_videos and has_state_v21:
+        # v2.1 format: images in video files
+        logger.info("检测到 LeRobot v2.1 格式（视频图像）")
+        return {
+            "image": "video:observation.images.front",
+            "wrist_image": "video:observation.images.wrist",
+            "state": "observation.state",
+            "actions": "action",
+            "format": "v2.1",
+        }
+    else:
+        # Fallback to v2.0
+        logger.warning(f"无法确定数据集格式，回退到 v2.0。列名: {sorted(cols)}")
+        return {
+            "image": "image",
+            "wrist_image": "wrist_image",
+            "state": "state",
+            "actions": "actions",
+            "format": "v2.0",
+        }
+
+
+def _decode_video_frame(video_path: pathlib.Path, frame_idx: int) -> np.ndarray:
+    """
+    从 mp4 视频文件中解码指定帧（支持 AV1 编码）。
+
+    Args:
+        video_path: mp4 文件路径
+        frame_idx: 帧索引
+
+    Returns:
+        numpy uint8 (H, W, C) 图像
+    """
+    import av
+
+    container = av.open(str(video_path))
+    stream = container.streams.video[0]
+
+    # seek 到指定帧
+    for i, frame in enumerate(container.decode(video=0)):
+        if i == frame_idx:
+            # 转换为 RGB numpy array
+            img = frame.to_ndarray(format="rgb24")
+            container.close()
+            return img.astype(np.uint8)
+
+    container.close()
+    raise RuntimeError(f"无法读取视频帧: {video_path}, frame={frame_idx}")
+
+
 def create_data_loader(
     dataset_path: str | pathlib.Path,
     batch_size: int = 64,
@@ -155,14 +243,14 @@ def create_data_loader(
     seed: int = 42,
 ) -> Iterator[dict[str, Any]]:
     """
-    创建 libero 数据加载器。
+    创建 libero 数据加载器（支持 LeRobot v2.0 和 v2.1 格式）。
 
     直接从 Parquet 文件加载数据，不依赖 lerobot。
     图像经过旋转 180° + resize 224×224 后作为模型输入。
     输出格式兼容 pi0.5 Observation.from_dict。
 
     Args:
-        dataset_path: 数据集根目录（包含 data/, meta/ 的 LeRobot v2.0 格式）
+        dataset_path: 数据集根目录（包含 data/, meta/ 的 LeRobot v2.0/v2.1 格式）
         batch_size: batch 大小
         num_workers: 未使用（保留接口兼容）
         action_horizon: action chunk 长度
@@ -175,12 +263,16 @@ def create_data_loader(
     dataset_path = pathlib.Path(dataset_path)
     meta_dir = dataset_path / "meta"
     data_dir = dataset_path / "data"
+    videos_dir = dataset_path / "videos"
 
     if not data_dir.exists():
         raise FileNotFoundError(
             f"数据集不存在: {dataset_path}\n"
             f"请确认 data/ 目录下有 Parquet 文件。"
         )
+
+    # 检测数据集格式（v2.0 vs v2.1）
+    col_map = _detect_format(dataset_path)
 
     # 加载元数据
     tasks = _load_tasks(meta_dir)
@@ -241,6 +333,29 @@ def create_data_loader(
     else:
         effective_action_dim = action_dim
 
+    # 检测是否为视频格式
+    is_video_format = col_map.get("format") == "v2.1"
+    if is_video_format:
+        logger.info("使用视频图像格式（v2.1）")
+        # 预计算视频路径映射: episode_idx -> (front_video_path, wrist_video_path)
+        _video_cache: dict[int, tuple[pathlib.Path, pathlib.Path]] = {}
+        for ep in episodes:
+            ep_idx = ep["episode_index"]
+            chunk_idx = ep_idx // 1000
+            front_path = videos_dir / f"chunk-{chunk_idx:03d}" / "observation.images.front" / f"episode_{ep_idx:06d}.mp4"
+            wrist_path = videos_dir / f"chunk-{chunk_idx:03d}" / "observation.images.wrist" / f"episode_{ep_idx:06d}.mp4"
+            if front_path.exists() and wrist_path.exists():
+                _video_cache[ep_idx] = (front_path, wrist_path)
+        logger.info(f"视频文件缓存: {len(_video_cache)} episodes")
+
+        # 预计算 parquet -> episode_index 映射
+        _parquet_to_episode: dict[pathlib.Path, int] = {}
+        for parquet_path, row, task_idx, ep_len in frame_index_list:
+            if parquet_path not in _parquet_to_episode:
+                # 从文件名解析 episode_index: episode_NNNNNN.parquet
+                ep_idx = int(parquet_path.stem.split("_")[1])
+                _parquet_to_episode[parquet_path] = ep_idx
+
     # 预加载当前 parquet 缓存（避免重复读取同一文件）
     _cached_path: pathlib.Path | None = None
     _cached_df: pd.DataFrame | None = None
@@ -270,11 +385,26 @@ def create_data_loader(
             df = _get_parquet(parquet_path)
 
             # 图像处理: 解码 → 旋转 180° → resize 224×224
-            images.append(_process_image(df["image"].iloc[row]))
-            wrist_images.append(_process_image(df["wrist_image"].iloc[row]))
+            if is_video_format:
+                # v2.1: 从视频文件解码帧
+                ep_idx = _parquet_to_episode.get(parquet_path)
+                if ep_idx is not None and ep_idx in _video_cache:
+                    front_path, wrist_path = _video_cache[ep_idx]
+                    img = _decode_video_frame(front_path, row)
+                    wrist_img = _decode_video_frame(wrist_path, row)
+                else:
+                    # fallback: 使用黑色图像
+                    img = np.zeros((256, 256, 3), dtype=np.uint8)
+                    wrist_img = np.zeros((256, 256, 3), dtype=np.uint8)
+                images.append(_rotate_180(_resize_224(img)))
+                wrist_images.append(_rotate_180(_resize_224(wrist_img)))
+            else:
+                # v2.0: 从 parquet 解码图像
+                images.append(_process_image(df[col_map["image"]].iloc[row]))
+                wrist_images.append(_process_image(df[col_map["wrist_image"]].iloc[row]))
 
             # State
-            state_val = df["state"].iloc[row]
+            state_val = df[col_map["state"]].iloc[row]
             if isinstance(state_val, np.ndarray):
                 states.append(state_val.astype(np.float32))
             else:
@@ -285,7 +415,7 @@ def create_data_loader(
             for ah in range(action_horizon):
                 arow = row + ah
                 if arow < df.shape[0]:
-                    a = df["actions"].iloc[arow]
+                    a = df[col_map["actions"]].iloc[arow]
                     if isinstance(a, np.ndarray):
                         action_chunk.append(a[:action_dim].astype(np.float32))
                     else:

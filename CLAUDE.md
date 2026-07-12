@@ -25,26 +25,8 @@ The `--resume` flag restores model params, optimizer state, and training step fr
 
 ### Evaluation
 
-**Direct evaluation (single process, recommended):**
-```bash
-# Quick test (libero_spatial, 5 episodes/task)
-python scripts/eval_direct.py --preset quick --nfe 1
-
-# Full eval (all 5 suites, 50 episodes/task)
-python scripts/eval_direct.py --preset full --nfe 1
-
-# Custom
-python scripts/eval_direct.py --nfe 1 --task-suite libero_spatial --num-episodes 10
-```
-
-**Server-client evaluation (two terminals):**
-```bash
-# Terminal 1: start policy server
-bash scripts/serve_policy.sh checkpoints/finetuned/1nfe/
-
-# Terminal 2: run eval client
-bash scripts/eval.sh libero_spatial
-```
+Evaluation is handled by the unified entry point in `eval/scripts/run_eval.py`
+(not in this directory). See the root `AGENTS.md` Evaluation section for usage.
 
 ### Smoke test (no GPU / no real data)
 ```python
@@ -144,18 +126,15 @@ The anchor loss teacher uses the correct `r` parameter (not `r=0`) for Euler int
 - `openpi.models.model.Observation` — observation struct with `from_dict()`
 - `openpi.shared.image_tools.resize_with_pad` — JAX-based image resize (used at eval time)
 
-### Conda environments
+### Conda environment
 | Env | Purpose |
 |-----|---------|
-| `openpi_server` | Training + serving (JAX/CUDA) |
-| `libero_client` | Eval client |
-| `libero_eval` | LIBERO simulation |
+| `openpi_server` | Training + eval (JAX/CUDA) |
 
 ## Key paths
 
 | Item | Path |
 |------|------|
-| Base checkpoint | `checkpoints/base/pi05_libero/` (params/ + assets/) |
-| Dataset | `data/libero/` (data/, meta/, norm_stats.json) |
-| Norm stats | `data/libero/norm_stats.json` — structure: `{"norm_stats": {"state": {...}, "actions": {...}}}` |
+| Base checkpoint | `checkpoints/smf_base/pi05_libero/` (params/ + assets/) |
+| Dataset | `datasets/libero/` (data/, meta/, norm_stats.json) — symlinked as `data` |
 | Architecture doc | `docs/20260602_154947_smf_base_training_plan.md` |

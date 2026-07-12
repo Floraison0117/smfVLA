@@ -49,22 +49,13 @@ bash scripts/train.sh configs/train/pi05_libero_5nfe.yaml
 
 ### 评估
 
-```bash
-# 启动 policy server
-bash scripts/serve_policy.sh checkpoints/finetuned/1nfe/
-
-# 运行评估
-bash scripts/eval.sh configs/eval/libero_spatial.yaml
-```
+评估由统一的入口 `eval/scripts/run_eval.py` 处理，见根目录 `AGENTS.md`。
 
 ### 查看结果
 
 ```bash
-# 查看训练日志
-tensorboard --logdir logs/train/
-
-# 查看评估结果
-cat results/libero_spatial.json
+# 评估结果
+ls eval/results/smf/
 ```
 
 ## 实验记录

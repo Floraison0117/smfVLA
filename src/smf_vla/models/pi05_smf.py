@@ -41,6 +41,9 @@ class Pi05SMF(pi0.Pi0):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config, rngs)
 
+        # 保存 config 供后续使用（如 embed_suffix_decte 中获取 depth）
+        self._smf_config = config
+
         # 获取 action expert 的 width
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         width = action_expert_config.width
@@ -134,7 +137,6 @@ class Pi05SMF(pi0.Pi0):
         r = jnp.zeros_like(timestep)
         return self.embed_suffix_smf(obs, noisy_actions, t=timestep, r=r)
 
-    @at.typecheck
     def embed_suffix_decte(
         self,
         obs: _model.Observation,
@@ -146,7 +148,7 @@ class Pi05SMF(pi0.Pi0):
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
         at.Bool[at.Array, " s"],
-        list[at.Float[at.Array, "d b emb"] | None],
+        at.Float[at.Array, "b emb"],
     ]:
         """
         Decoupled Time Embedding 版本的 embed_suffix。
@@ -184,20 +186,11 @@ class Pi05SMF(pi0.Pi0):
         time_emb_r = self.time_mlp_out(time_emb_r)
         time_emb_r = nnx.swish(time_emb_r)  # [B, width]
 
-        # 构造 per-layer adarms_cond
-        # 获取总层数
-        action_expert_config = _gemma.get_config(self.config.action_expert_variant)
-        depth = action_expert_config.depth  # 18
-
-        # 前 encoder_depth 层用 e_t，后 depth-encoder_depth 层用 e_r
-        # shape: [depth, B, width]
-        per_layer_cond = jnp.concatenate([
-            jnp.broadcast_to(time_emb_t[None, :, :], (encoder_depth, *time_emb_t.shape)),
-            jnp.broadcast_to(time_emb_r[None, :, :], (depth - encoder_depth, *time_emb_r.shape)),
-        ], axis=0)
-
-        # adarms_cond: [None(专家0), per_layer_cond(专家1)]
-        adarms_cond = [None, per_layer_cond]
+        # DecTE: 使用 e_t 作为 adarms_cond（2D [B, width]）
+        # 注：原始 DecTE 使用 per-layer conditioning [depth, B, width]，
+        # 但 nn.scan 不支持 per-layer broadcast。简化为使用 e_t。
+        # encoder_depth 参数保留供未来使用。
+        adarms_cond = time_emb_t  # [B, width]
 
         # Action expert tokens
         action_expert_tokens = action_tokens
@@ -267,6 +260,7 @@ class Pi05SMF(pi0.Pi0):
                 suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix_decte(
                     obs, noisy_actions, t=t, r=r, encoder_depth=encoder_depth
                 )
+                adarms_cond = [None, adarms_cond]  # DecTE 返回 2D [B, width]
             else:
                 suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix_smf(
                     obs, noisy_actions, t=t, r=r
@@ -362,6 +356,7 @@ class Pi05SMF(pi0.Pi0):
                     observation, x_t, t=jnp.broadcast_to(time, batch_size), r=r_dummy,
                     encoder_depth=encoder_depth,
                 )
+                adarms_cond = [None, adarms_cond]
             else:
                 suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix_smf(
                     observation, x_t, t=jnp.broadcast_to(time, batch_size), r=r_dummy
@@ -389,6 +384,67 @@ class Pi05SMF(pi0.Pi0):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    def extract_hidden_states(
+        self,
+        observation: _model.Observation,
+        x: at.Float[at.Array, "b ah ad"],
+        layer_indices: tuple[int, ...] = (12, 16),
+    ) -> list[at.Float[at.Array, "b t d"]]:
+        """
+        提取 LLM 中间层的 hidden states（用于 BPL loss）。
+
+        Args:
+            observation: 观测数据
+            x: 归一化的 action（作为 suffix token 输入）
+            layer_indices: 要提取的中间层索引
+
+        Returns:
+            list of hidden states，每个对应一个 layer_index。
+            只返回 action expert（expert 1）的输出。
+        """
+        observation = _model.preprocess_observation(None, observation, train=False)
+
+        # 构建 suffix tokens：用 x 作为 noisy action，r=0, t=1（1-step 预测）
+        batch_size = x.shape[0]
+        r = jnp.zeros(batch_size)
+        t = jnp.ones(batch_size)
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix_smf(
+            observation, x, t=t, r=r
+        )
+        adarms_cond_list = [None, adarms_cond]
+
+        # 构建 prefix tokens
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+
+        # 拼接 prefix + suffix
+        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+        attn_mask = pi0.make_attn_mask(input_mask, ar_mask)
+        positions = jnp.cumsum(input_mask, axis=1) - 1
+
+        # 调用 Gemma 的 forward_with_intermediates 方法
+        embedded_inputs = [prefix_tokens, suffix_tokens]
+        outputs, _, intermediates = self.PaliGemma.llm(
+            embedded_inputs,
+            positions,
+            attn_mask,
+            adarms_cond_list,
+            layer_indices=layer_indices,
+            method="forward_with_intermediates",
+        )
+
+        # 只返回 action expert（expert 1）的 hidden states
+        # intermediates[i] 是一个 list [expert0_out, expert1_out]
+        # 我们只需要 expert 1（action expert）的输出
+        result = []
+        for idx in layer_indices:
+            h = intermediates[idx]  # list of expert outputs
+            # h[0] = PaliGemma expert, h[1] = action expert
+            action_expert_h = h[1] if len(h) > 1 else h[0]
+            result.append(action_expert_h)
+
+        return result
 
 
 def _identity_zero_init(width: int):
