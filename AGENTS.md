@@ -22,6 +22,14 @@ accurate and authoritative. This file captures only what is easy to miss.
 - Method package names differ: `smf_vla`, `snapflow`, `freeflow`, `dmf_vla`
   (under `<method>/src/`). SnapFlow's model subclasses SMF's `Pi05SMF`.
 - Shared finetune base for all methods: `checkpoints/smf_base/pi05_libero/`.
+- **Nested git repos:** `openpi/`, `smfVLA/`, and `dmf/` each have their own
+  `.git` — they are embedded repos (not submodules). Commits inside them are
+  independent of the root repo. `snapflow/` and `freeflow/` are tracked by the
+  root repo directly.
+- `datasets/` and `checkpoints/` are gitignored — present on disk but never
+  committed. Same for `logs/`, `wandb/`, `*.log`.
+- Root `scripts/` holds only two conversion utilities (`convert_pytorch_to_jax.py`,
+  `convert_calvin_to_jax.py`); it is NOT where method training scripts live.
 
 ## Training
 
@@ -60,8 +68,11 @@ python run_eval.py --dataset calvin      --calvin-dataset debug --nfe 1 --model-
   `_METADATA` at root) — both handled by `eval_utils`.
 - **`preset` mode = 5 episodes/task, NOT 50.** Only `fullset`/`full` use 50.
 - LIBERO-Plus loads the perturbed `libero-plus` package, not vanilla `libero`.
-- **CALVIN eval (`eval_calvin.py`) is debug/partial** — full sequences and
-  task_oracle are not implemented. Treat CALVIN results as untrusted.
+- **CALVIN eval has two paths:** `run_eval.py` → `eval_calvin.py` (debug/partial,
+  no full sequences or task_oracle — treat results as untrusted); and a
+  standalone official-benchmark suite (`eval_calvin_benchmark.py` +
+  `calvin_official_protocol.py` + `run_calvin_benchmark_all_nfe.sh`) NOT wired
+  into `run_eval.py` — invoke directly for the full ABCD→D protocol.
 - Results → `eval/results/<model_type>/...` as timestamped JSON; each records its
   checkpoint in `metadata.checkpoint`.
 
@@ -81,3 +92,4 @@ Note: `openpi/` itself uses line-length 120 — do not reformat openpi files to 
 
 - `CLAUDE.md` (root) — full method/loss/eval reference.
 - `smfVLA/CLAUDE.md`, `snapflow/CLAUDE.md`, `freeflow/CLAUDE.md`, `dmf/README.md`.
+- `docs/directory_structure.md` — current repo tree after cleanup.
