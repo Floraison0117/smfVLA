@@ -135,6 +135,6 @@ The anchor loss teacher uses the correct `r` parameter (not `r=0`) for Euler int
 
 | Item | Path |
 |------|------|
-| Base checkpoint | `checkpoints/smf_base/pi05_libero/` (params/ + assets/) |
+| Base checkpoint | `checkpoints/pi05_libero/` (params/ + assets/) |
 | Dataset | `datasets/libero/` (data/, meta/, norm_stats.json) — symlinked as `data` |
 | Architecture doc | `docs/20260602_154947_smf_base_training_plan.md` |
