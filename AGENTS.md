@@ -1,9 +1,5 @@
 # AGENTS.md
 
-Compact guide for OpenCode agents. For the full architecture deep-dive
-(methods, loss tables, per-head differences) read `CLAUDE.md` first — it is
-accurate and authoritative. This file captures only what is easy to miss.
-
 ## Environment
 
 - **One env for everything:** `openpi_server`. Interpreter at
@@ -51,31 +47,27 @@ bash scripts/train.sh configs/train/<config>.yaml --resume <ckpt>               
 ## Evaluation
 
 ```bash
-cd /root/autodl-tmp/eval/scripts
-python run_eval.py --dataset libero      --mode preset --nfe 1 --model-type <m> [--checkpoint <c>]
-python run_eval.py --dataset libero-plus --mode quick  --nfe 1 --model-type <m>
-python run_eval.py --dataset calvin      --calvin-dataset debug --nfe 1 --model-type <m>
+# LIBERO-Plus
+cd /root/autodl-tmp && python -m eval.libero_plus.main --model-type pi05 --nfe 1 --mode quick
+cd /root/autodl-tmp && python -m eval.libero_plus.main --model-type dmf --nfe 10 --mode normal
+
+# CALVIN (pi0.5 only, PyTorch)
+cd /root/autodl-tmp && python -m eval.calvin.main --model-type pi05 --nfe 1 --mode quick
+cd /root/autodl-tmp && python -m eval.calvin.main --model-type pi05 --nfe 10 --mode normal
 ```
 
-- `eval/scripts/eval_utils.py` is the core. Its `setup_paths()` injects all four
-  method `src/` dirs + openpi into `sys.path`, so no manual PYTHONPATH is needed
-  for eval.
-- `detect_checkpoint_type()` **auto-sniffs the method from checkpoint param keys**
-  (`logvar_proj`→DMF, `target_time_mlp`→SnapFlow, `time_proj`→SMF,
-  `time_mlp_in`→FreeFlow). DMF reuses base `time_mlp_in`/`time_mlp_out` for
-  both E(t) and E(r); `logvar_proj` is its unique identifier. `--model-type` is usually optional.
-- NFE = sampling `num_steps`; all methods support 1/2/4/10.
-- Two checkpoint formats: standard (`ckpt/params/`) and FreeFlow (flat, with
-  `_METADATA` at root) — both handled by `eval_utils`.
-- **`preset` mode = 5 episodes/task, NOT 50.** Only `fullset`/`full` use 50.
+- `eval/common/` — shared policy loader (`pi05` + `dmf` JAX), result utils, constants.
+- `eval/libero_plus/` — LIBERO-Plus evaluation. `main.py` is the entry point. Modes:
+  `quick` (1 suite, spatial, 10 tasks, 5 ep), `normal` (4 suites, perturbation sampling,
+  5 ep, <10h), `fullset` (5 suites, all tasks, 50 ep).
+- `eval/calvin/` — CALVIN ABCD→D official benchmark (pi0.5 PyTorch only, no DMF).
+  Modes: `quick` (debug dataset, 5 seqs), `normal` (ABCD, 100 seqs), `fullset` (ABCD,
+  1000 seqs).
+- Model types: `pi05` (original) and `dmf`. NFE = `num_steps`; supports 1/2/4/10.
+- `detect_checkpoint_type()` auto-sniffs: `logvar_proj`→dmf, else pi05.
 - LIBERO-Plus loads the perturbed `libero-plus` package, not vanilla `libero`.
-- **CALVIN eval has two paths:** `run_eval.py` → `eval_calvin.py` (debug/partial,
-  no full sequences or task_oracle — treat results as untrusted); and a
-  standalone official-benchmark suite (`eval_calvin_benchmark.py` +
-  `calvin_official_protocol.py` + `run_calvin_benchmark_all_nfe.sh`) NOT wired
-  into `run_eval.py` — invoke directly for the full ABCD→D protocol.
-- Results → `eval/results/<model_type>/...` as timestamped JSON; each records its
-  checkpoint in `metadata.checkpoint`.
+- Results → `eval/results/` as timestamped JSON; shell scripts in `eval/scripts/`
+  for batch runs (`run_calvin_benchmark_all_nfe.sh`, `eval_dmf_all.sh`).
 
 ## Code style
 
@@ -91,6 +83,5 @@ Note: `openpi/` itself uses line-length 120 — do not reformat openpi files to 
 
 ## Deeper docs
 
-- `CLAUDE.md` (root) — full method/loss/eval reference.
-- `smfVLA/CLAUDE.md`, `snapflow/CLAUDE.md`, `freeflow/CLAUDE.md`, `dmf/README.md`.
-- `docs/directory_structure.md` — current repo tree after cleanup.
+- `smfVLA/CLAUDE.md`, `snapflow/CLAUDE.md`, `freeflow/CLAUDE.md`, `dmf/README.md` — per-method details.
+- `docs/experiment_workflow.md` — experiment recording workflow; `docs/experiment_template.md` — report template; `docs/experiments/` — saved reports.

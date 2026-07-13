@@ -74,7 +74,7 @@ trainable:
   - "time_mlp_out/**"
 
 checkpointing:
-  base_checkpoint: /root/autodl-tmp/checkpoints/smf_base/pi05_libero
+  base_checkpoint: /root/autodl-tmp/checkpoints/pi05_libero
   save_dir: /root/autodl-tmp/freeflow/checkpoints/finetuned/freeflow
   resume: null
 

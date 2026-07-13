@@ -1,0 +1,83 @@
+{
+  "overall": {
+    "total_success_rate": 0.0,
+    "total_tasks": 15,
+    "total_successes": 0,
+    "success_by_length": {
+      "length_1": 0.0,
+      "length_2": 0.0,
+      "length_3": 0.0,
+      "length_4": 0.0,
+      "length_5": 0.0
+    }
+  },
+  "config": {
+    "dataset": "calvin_debug",
+    "nfe": 1,
+    "model_type": "original",
+    "checkpoint": "/root/autodl-tmp/checkpoints/pi05_calvin_pt",
+    "num_sequences": 5,
+    "seed": 0
+  },
+  "per_sequence": [
+    {
+      "sequence_length": 1,
+      "success_count": 0,
+      "total_steps": 360,
+      "sequence": [
+        "move_slider_left"
+      ]
+    },
+    {
+      "sequence_length": 2,
+      "success_count": 0,
+      "total_steps": 360,
+      "sequence": [
+        "move_slider_left",
+        "move_slider_right"
+      ]
+    },
+    {
+      "sequence_length": 3,
+      "success_count": 0,
+      "total_steps": 360,
+      "sequence": [
+        "move_slider_left",
+        "move_slider_right",
+        "turn_on_led"
+      ]
+    },
+    {
+      "sequence_length": 4,
+      "success_count": 0,
+      "total_steps": 360,
+      "sequence": [
+        "move_slider_left",
+        "move_slider_right",
+        "turn_on_led",
+        "turn_on_lightbulb"
+      ]
+    },
+    {
+      "sequence_length": 5,
+      "success_count": 0,
+      "total_steps": 360,
+      "sequence": [
+        "move_slider_left",
+        "move_slider_right",
+        "turn_on_led",
+        "turn_on_lightbulb",
+        "open_drawer"
+      ]
+    }
+  ],
+  "timing": {
+    "avg_latency_ms": 110.09
+  },
+  "metadata": {
+    "start_time": "2026-07-12T23:52:28.136397",
+    "end_time": "2026-07-12T23:54:07.420894",
+    "duration_seconds": 99.3,
+    "hostname": "autodl-container-lezfbu0bdx-2f5bc1be"
+  }
+}
