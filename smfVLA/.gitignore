@@ -1,0 +1,47 @@
+# Checkpoints (large model weights)
+checkpoints/
+
+# Training data
+data/
+
+# Results (eval outputs)
+results/
+
+# Logs
+logs/
+wandb/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual envs
+.venv/
+venv/
+
+# Third party (symlinked, don't track)
+third_party/openpi
+
+# JAX cache
+.jax_cache/
+
+# Temp files
+*.tmp
+*.swp
+*~

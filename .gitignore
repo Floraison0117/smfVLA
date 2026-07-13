@@ -5,6 +5,12 @@ checkpoints/
 *.pth
 *.safetensors
 
+# Per-method data/assets (was gitignored in nested repos)
+openpi/assets/
+openpi/data/
+smfVLA/data/
+smfVLA/results/
+
 # Training logs
 logs/
 wandb/

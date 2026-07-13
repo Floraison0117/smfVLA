@@ -1,0 +1,85 @@
+# DMF (Decoupled MeanFlow) training configuration for CALVIN
+# 数据：CALVIN D-D training subset → LeRobot parquet（见 scripts/convert_calvin_data_to_lerobot.py）
+# base checkpoint：pi05_calvin_corrected（CALVIN 域）
+
+method: "dmf"
+
+# Model configuration
+action_horizon: 10
+action_dim: 32
+discrete_state_input: false
+
+# DMF-specific hyperparameters (logit-normal time sampling)
+dmf_depth_ratio: 0.67
+use_logvar: true
+
+# Time sampling distributions (logit-normal, sigmoid(N); PyTorch DMFLoss defaults)
+P_mean: 0.0    # Mean for FM time distribution
+P_std: 1.0     # Std for FM time distribution
+P_mean_t: 0.4   # Mean for MF current time distribution (encoder cond)
+P_std_t: 1.0    # Std for MF current time distribution
+P_mean_r: -1.2  # Mean for MF target time distribution (decoder cond)
+P_std_r: 1.0    # Std for MF target time distribution
+
+# EMA (Exponential Moving Average) — eval uses EMA model
+ema_decay: 0.9999
+
+# Training configuration
+training_steps: 30000
+batch_size: 16
+learning_rate: 1.0e-4
+weight_decay: 0.0
+warmup_ratio: 0.016
+gradient_clipping: 1.0
+precision: "bfloat16"
+
+# Checkpointing
+checkpoint_dir: /root/autodl-tmp/checkpoints/dmf_finetuned_calvin
+save_every: 2000
+log_every: 100
+
+# WandB
+wandb:
+  project: dmf
+  entity: null
+  run_name: dmf_calvin_1nfe
+  tags: ["calvin", "1nfe", "dmf", "jax"]
+
+# Data（CALVIN LeRobot parquet，由 convert_calvin_data_to_lerobot.py 产出）
+dataset_path: /root/autodl-tmp/datasets/calvin_lerobot
+action_dim_raw: 7       # CALVIN 原始 action 维
+target_action_dim: 32  # pad 到 pi0.5
+
+# Base checkpoint（CALVIN 域 pi0.5）
+checkpoint: /root/autodl-tmp/checkpoints/pi05_calvin_corrected
+
+# Parameter freezing（与 libero 一致：冻 VLM，训 action expert + time MLP + logvar）
+freeze:
+  - "PaliGemma/img/**"
+  - "PaliGemma/llm/embedder/**"
+  - "PaliGemma/llm/final_norm/scale"
+  - "PaliGemma/llm/layers/attn/q_einsum/w"
+  - "PaliGemma/llm/layers/attn/kv_einsum/w"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
+  - "PaliGemma/llm/layers/mlp/gating_einsum"
+  - "PaliGemma/llm/layers/mlp/linear"
+  - "PaliGemma/llm/layers/pre_attention_norm/scale"
+  - "PaliGemma/llm/layers/pre_ffw_norm/scale"
+
+trainable:
+  - "PaliGemma/llm/layers/attn/q_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
+  - "PaliGemma/llm/layers/mlp_1/**"
+  - "PaliGemma/llm/layers/pre_attention_norm_1/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
+  - "PaliGemma/llm/final_norm_1/**"
+  - "action_in_proj/**"
+  - "action_out_proj/**"
+  - "time_mlp_in/**"
+  - "time_mlp_out/**"
+  - "logvar_proj/**"
+
+eval:
+  nfe: 1
+  eval_during_training: false

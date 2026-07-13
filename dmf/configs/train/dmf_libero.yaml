@@ -1,0 +1,83 @@
+# DMF (Decoupled MeanFlow) training configuration for LIBERO
+# Uses v2.0 format with embedded images (faster than video decoding)
+
+# Method
+method: "dmf"
+
+# Model configuration
+action_horizon: 10
+action_dim: 32
+action_dim_raw: 7          # Raw LIBERO action dim (padded to action_dim for pi0.5)
+discrete_state_input: false
+
+# DMF-specific hyperparameters (from paper)
+dmf_depth_ratio: 0.67  # Encoder depth as ratio of total action expert layers (2/3)
+use_logvar: true  # Enable learned variance weighting
+
+# Time sampling distributions (logit-normal, sigmoid(N); PyTorch DMFLoss defaults)
+P_mean: 0.0    # Mean for FM time distribution
+P_std: 1.0     # Std for FM time distribution
+P_mean_t: 0.4   # Mean for MF current time distribution (encoder cond)
+P_std_t: 1.0    # Std for MF current time distribution
+P_mean_r: -1.2  # Mean for MF target time distribution (decoder cond)
+P_std_r: 1.0    # Std for MF target time distribution
+
+# EMA (Exponential Moving Average) — eval uses EMA model
+ema_decay: 0.9999
+
+# Training configuration
+training_steps: 30000
+batch_size: 16
+learning_rate: 1.0e-4
+weight_decay: 0.0
+warmup_ratio: 0.016  # 500 steps out of 30000
+gradient_clipping: 1.0
+precision: "bfloat16"
+
+# Checkpointing
+checkpoint_dir: /root/autodl-tmp/checkpoints/dmf_finetuned
+save_every: 5000
+log_every: 100
+
+# WandB logging
+wandb:
+  project: dmf
+  entity: null
+  run_name: dmf_libero_1nfe
+  tags: ["libero", "1nfe", "dmf", "jax"]
+
+# Data configuration
+dataset_path: /root/autodl-tmp/datasets/libero
+
+# Base checkpoint to load
+checkpoint: /root/autodl-tmp/checkpoints/pi05_libero
+
+# Parameter freezing patterns
+freeze:
+  - "PaliGemma/img/**"                    # Visual encoder (SigLIP)
+  - "PaliGemma/llm/embedder/**"          # Token embeddings
+  - "PaliGemma/llm/final_norm/**"         # Final norm (no _1 suffix)
+  - "PaliGemma/llm/layers/attn/**"       # Attention layers (no _1)
+  - "PaliGemma/llm/layers/mlp/**"        # MLP layers (no _1)
+  - "PaliGemma/llm/layers/pre_attention_norm/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm/**"
+
+trainable:
+  - "PaliGemma/llm/layers/attn_1/**"     # Action expert attention
+  - "PaliGemma/llm/layers/mlp_1/**"      # Action expert MLP
+  - "PaliGemma/llm/layers/pre_attention_norm_1/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
+  - "PaliGemma/llm/final_norm_1/**"      # Action expert final norm
+  - "action_in_proj/**"
+  - "action_out_proj/**"
+  - "time_mlp_in/**"                      # base time MLP（DMF 复用算 E(t)/E(r)）
+  - "time_mlp_out/**"
+  - "logvar_proj/**"                      # DMF logvar head
+
+# Evaluation configuration (optional, for eval during training)
+eval:
+  nfe: 1
+  eval_during_training: true
+  eval_every: 5000
+  eval_tasks: ["libero_spatial", "libero_object", "libero_goal"]
+  eval_episodes: 10
