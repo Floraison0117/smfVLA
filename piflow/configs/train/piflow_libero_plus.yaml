@@ -1,0 +1,82 @@
+# Pi-Flow training configuration for LIBERO-Plus
+# Velocity imitation distillation: student GMFlow policy learns from frozen teacher
+
+method: "piflow"
+
+# Model
+action_horizon: 10
+action_dim: 32
+action_dim_raw: 7
+discrete_state_input: false
+
+# GMM configuration
+num_components: 8
+inner_substeps: 8
+teacher_query_points: 4
+nfe: 1  # training NFE: 1, 2, or 4. Each segment gets inner_substeps//nfe substeps
+        # and teacher_query_points teacher queries.
+
+# Training
+training_steps: 30000
+batch_size: 16
+learning_rate: 1.0e-4
+weight_decay: 0.01
+warmup_steps: 1000
+gradient_clip_norm: 1.0
+precision: "bfloat16"
+
+# EMA
+ema_decay: 0.9999
+
+# Checkpointing
+checkpoint_dir: /root/autodl-tmp/checkpoints/piflow_finetuned
+save_every: 5000
+log_every: 50
+
+# WandB
+wandb:
+  project: piflow
+  entity: null
+  run_name: piflow_libero_plus_1nfe
+  tags: ["libero-plus", "1nfe", "piflow", "gmflow", "jax"]
+
+# Data
+dataset_path: /root/autodl-tmp/datasets/libero-plus-training
+
+# Base checkpoint (teacher + student init)
+checkpoint: /root/autodl-tmp/checkpoints/pi05_libero
+
+# Freeze: VLM backbone
+freeze:
+  - "PaliGemma/img/**"
+  - "PaliGemma/llm/embedder/**"
+  - "PaliGemma/llm/final_norm/scale"
+  - "PaliGemma/llm/layers/attn/q_einsum/w"
+  - "PaliGemma/llm/layers/attn/kv_einsum/w"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
+  - "PaliGemma/llm/layers/mlp/gating_einsum"
+  - "PaliGemma/llm/layers/mlp/linear"
+  - "PaliGemma/llm/layers/pre_attention_norm/scale"
+  - "PaliGemma/llm/layers/pre_ffw_norm/scale"
+
+# Trainable: action expert _1 + projection layers + GMM heads
+# Note: action_out_proj is NOT trained (kept from teacher init, unused by student)
+trainable:
+  - "PaliGemma/llm/layers/attn/q_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
+  - "PaliGemma/llm/layers/mlp_1/**"
+  - "PaliGemma/llm/layers/pre_attention_norm_1/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
+  - "PaliGemma/llm/final_norm_1/**"
+  - "action_in_proj/**"
+  - "time_mlp_in/**"
+  - "time_mlp_out/**"
+  - "gmm_mean_proj/**"
+  - "gmm_logstd_proj/**"
+  - "gmm_logweight_proj/**"
+
+# Evaluation
+eval:
+  nfe: 1
+  eval_during_training: false

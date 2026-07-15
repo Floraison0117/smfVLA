@@ -91,8 +91,12 @@ class Pi05DMF(pi0.Pi0):
         return action_tokens, input_mask, ar_mask
 
     def _dmf_forward(self, obs, noisy_actions, t, r, *, prefix_tokens=None, prefix_mask=None,
-                     prefix_ar_mask=None, return_logvar=False):
-        """共享前向（loss/sample 同源）：flow map u(x,t,r)。全前向（kv_cache=None）。"""
+                     prefix_ar_mask=None, prefix_kv_cache=None, return_logvar=False):
+        """共享前向（loss/sample 同源）：flow map u(x,t,r)。
+
+        prefix_kv_cache=None 时走统一前向，非 None 时仅过 action expert（suffix-only +
+        注入 freeze 的 prefix KV cache），JVP 不穿透 VLM backbone。
+        """
         cond_stack = self._cond_stack(t, r)  # [depth,B,width]
         suffix_tokens, suffix_mask, suffix_ar_mask = self._embed_suffix_tokens(noisy_actions)
         if prefix_tokens is None:
@@ -103,11 +107,21 @@ class Pi05DMF(pi0.Pi0):
         attn_mask = pi0.make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
 
-        # 3D cond → __call__ 自动走逐层 forward_with_intermediates（encoder E(t) / decoder E(r)）
-        (_, suffix_out), _ = self.PaliGemma.llm(
-            [prefix_tokens, suffix_tokens],
-            positions=positions, mask=attn_mask, adarms_cond=[None, cond_stack],
-        )
+        if prefix_kv_cache is None:
+            # Original unified forward (backward-compat)
+            (_, suffix_out), _ = self.PaliGemma.llm(
+                [prefix_tokens, suffix_tokens],
+                positions=positions, mask=attn_mask, adarms_cond=[None, cond_stack],
+            )
+        else:
+            # Suffix-only forward: action expert reads frozen prefix KV cache.
+            # Slice positions & mask to suffix-only query length (Q only has suffix tokens).
+            p_len = prefix_tokens.shape[1]
+            (_, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                positions=positions[:, p_len:], mask=attn_mask[:, p_len:, :],
+                adarms_cond=[None, cond_stack], kv_cache=prefix_kv_cache,
+            )
         u = self.action_out_proj(suffix_out[:, -self.action_horizon:])
 
         if return_logvar and self.logvar_proj is not None:
@@ -120,11 +134,25 @@ class Pi05DMF(pi0.Pi0):
         return u
 
     def _dmf_model_fn(self, prefix_tokens, prefix_mask, prefix_ar_mask):
-        """compute_dmf_loss 用的 model_fn（prefix 已 stop_gradient 预算，JVP 不穿透视觉编码器）。"""
+        """compute_dmf_loss 用的 model_fn。
+
+        预计算 prefix KV cache（stop_gradient），使得 JVP 仅穿透 action expert，
+        不穿过 3B VLM backbone。
+        """
+        prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        prefix_attn_mask = pi0.make_attn_mask(prefix_mask, prefix_ar_mask)
+        _, prefix_kv = self.PaliGemma.llm(
+            [prefix_tokens, None],
+            positions=prefix_positions, mask=prefix_attn_mask,
+            adarms_cond=[None, None],
+        )
+        prefix_kv = jax.lax.stop_gradient(prefix_kv)
+
         def model_fn(params, obs, noisy_actions, t, r, return_logvar=False):
             return self._dmf_forward(
                 obs, noisy_actions, t, r,
-                prefix_tokens=prefix_tokens, prefix_mask=prefix_mask, prefix_ar_mask=prefix_ar_mask,
+                prefix_tokens=prefix_tokens, prefix_mask=prefix_mask,
+                prefix_ar_mask=prefix_ar_mask, prefix_kv_cache=prefix_kv,
                 return_logvar=return_logvar,
             )
         return model_fn
@@ -152,11 +180,21 @@ class Pi05DMF(pi0.Pi0):
 
     @override
     def sample_actions(self, rng, observation, *, num_steps=1, noise=None):
-        """DMF Euler 采样：x_{k+1}=x_k+(r-t)·u(x_k,t,r)。每步全前向（1-NFE=1次前向）。"""
+        """DMF Euler 采样：x_{k+1}=x_k+(r-t)·u(x_k,t,r)。prefix KV 预计算一次。"""
         observation = _model.preprocess_observation(None, observation, train=False)
         batch_size = observation.state.shape[0]
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        # Precompute prefix KV once (reused across all Euler steps)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        prefix_attn_mask = pi0.make_attn_mask(prefix_mask, prefix_ar_mask)
+        _, prefix_kv = self.PaliGemma.llm(
+            [prefix_tokens, None],
+            positions=prefix_positions, mask=prefix_attn_mask,
+            adarms_cond=[None, None],
+        )
 
         t_steps = jnp.linspace(1.0, 0.0, num_steps + 1)
 
@@ -165,6 +203,8 @@ class Pi05DMF(pi0.Pi0):
             u = self._dmf_forward(
                 observation, x,
                 jnp.full((batch_size,), t_cur), jnp.full((batch_size,), t_nxt),
+                prefix_tokens=prefix_tokens, prefix_mask=prefix_mask,
+                prefix_ar_mask=prefix_ar_mask, prefix_kv_cache=prefix_kv,
             )
             return x + (t_nxt - t_cur) * u
 

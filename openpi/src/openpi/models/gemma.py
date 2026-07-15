@@ -511,10 +511,15 @@ class Module(nn.Module):
             else:
                 layer_adarms = adarms_cond
 
+            # Slice kv_cache per layer when it's stacked [depth, B, T, K, H]
+            if kv_cache is not None:
+                layer_kv_cache = (kv_cache[0][i], kv_cache[1][i])
+            else:
+                layer_kv_cache = None
             (embedded, layer_kv) = block.apply(
                 {"params": layer_params},
                 embedded,
-                kv_cache,
+                layer_kv_cache,
                 positions,
                 mask,
                 layer_adarms,

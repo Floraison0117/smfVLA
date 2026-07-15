@@ -22,7 +22,7 @@ P_std_t: 1.0    # Std for MF current time distribution
 P_mean_r: -1.2  # Mean for MF target time distribution (decoder cond)
 P_std_r: 1.0    # Std for MF target time distribution
 
-# EMA (Exponential Moving Average) — eval uses EMA model
+# EMA (Exponential Moving Average) - eval uses EMA model
 ema_decay: 0.9999
 
 # Training configuration
@@ -52,27 +52,34 @@ dataset_path: /root/autodl-tmp/datasets/libero
 # Base checkpoint to load
 checkpoint: /root/autodl-tmp/checkpoints/pi05_libero
 
-# Parameter freezing patterns
+# Parameter freezing: precise patterns matching actual NNX paths.
+# Attention weights: attn/q_einsum_1/w (NOT attn_1/q_einsum/w).
+# MLP and norms have separate _1 sub-modules (mlp_1/, etc.).
 freeze:
-  - "PaliGemma/img/**"                    # Visual encoder (SigLIP)
-  - "PaliGemma/llm/embedder/**"          # Token embeddings
-  - "PaliGemma/llm/final_norm/**"         # Final norm (no _1 suffix)
-  - "PaliGemma/llm/layers/attn/**"       # Attention layers (no _1)
-  - "PaliGemma/llm/layers/mlp/**"        # MLP layers (no _1)
-  - "PaliGemma/llm/layers/pre_attention_norm/**"
-  - "PaliGemma/llm/layers/pre_ffw_norm/**"
+  - "PaliGemma/img/**"
+  - "PaliGemma/llm/embedder/**"
+  - "PaliGemma/llm/final_norm/scale"       # VLM final norm
+  - "PaliGemma/llm/layers/attn/q_einsum/w"
+  - "PaliGemma/llm/layers/attn/kv_einsum/w"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
+  - "PaliGemma/llm/layers/mlp/gating_einsum"
+  - "PaliGemma/llm/layers/mlp/linear"
+  - "PaliGemma/llm/layers/pre_attention_norm/scale"
+  - "PaliGemma/llm/layers/pre_ffw_norm/scale"
 
 trainable:
-  - "PaliGemma/llm/layers/attn_1/**"     # Action expert attention
-  - "PaliGemma/llm/layers/mlp_1/**"      # Action expert MLP
+  - "PaliGemma/llm/layers/attn/q_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
+  - "PaliGemma/llm/layers/mlp_1/**"
   - "PaliGemma/llm/layers/pre_attention_norm_1/**"
   - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
-  - "PaliGemma/llm/final_norm_1/**"      # Action expert final norm
+  - "PaliGemma/llm/final_norm_1/**"
   - "action_in_proj/**"
   - "action_out_proj/**"
-  - "time_mlp_in/**"                      # base time MLP（DMF 复用算 E(t)/E(r)）
+  - "time_mlp_in/**"
   - "time_mlp_out/**"
-  - "logvar_proj/**"                      # DMF logvar head
+  - "logvar_proj/**"
 
 # Evaluation configuration (optional, for eval during training)
 eval:

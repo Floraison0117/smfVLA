@@ -5,6 +5,7 @@ import json
 import logging
 import pathlib
 import random
+import socket
 import sys
 import time
 
@@ -116,7 +117,8 @@ def preprocess_obs(obs, resize_size=224):
 
 def run_single_task_episode(env, initial_state, task_description, policy,
                             max_steps, num_steps_wait, replan_steps):
-    """运行单个 episode，返回 (success, steps, latencies)。"""
+    """运行单个 episode，返回 timing dict。"""
+    episode_start = time.monotonic()
     env.reset()
     action_plan = collections.deque()
 
@@ -128,14 +130,20 @@ def run_single_task_episode(env, initial_state, task_description, policy,
     t = 0
     done = False
     episode_latencies = []
+    total_preprocess_ms = 0.0
+    total_env_step_ms = 0.0
 
     while t < max_steps + num_steps_wait:
         if t < num_steps_wait:
+            step_start = time.monotonic()
             obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
+            total_env_step_ms += (time.monotonic() - step_start) * 1000
             t += 1
             continue
 
+        pp_start = time.monotonic()
         img, wrist_img, state = preprocess_obs(obs)
+        total_preprocess_ms += (time.monotonic() - pp_start) * 1000
 
         if not action_plan:
             element = {
@@ -154,12 +162,25 @@ def run_single_task_episode(env, initial_state, task_description, policy,
             action_plan.extend(action_chunk[:replan_steps])
 
         action = action_plan.popleft()
+        step_start = time.monotonic()
         obs, reward, done, info = env.step(action.tolist())
+        total_env_step_ms += (time.monotonic() - step_start) * 1000
         if done:
             break
         t += 1
 
-    return bool(done), t, episode_latencies
+    total_infer_ms = sum(episode_latencies)
+    episode_wall_ms = (time.monotonic() - episode_start) * 1000
+
+    return {
+        "success": bool(done),
+        "steps": t,
+        "infer_latencies_ms": episode_latencies,
+        "total_infer_ms": round(total_infer_ms, 2),
+        "total_env_step_ms": round(total_env_step_ms, 2),
+        "total_preprocess_ms": round(total_preprocess_ms, 2),
+        "episode_wall_ms": round(episode_wall_ms, 2),
+    }
 
 
 def clear_jax_cache():
@@ -178,7 +199,7 @@ def clear_jax_cache():
 
 def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
                    replan_steps, num_steps_wait, checkpoint, num_episodes=1,
-                   sampled_task_names=None):
+                   sampled_task_names=None, num_workers=1, worker_id=0):
     """评测单个 suite。"""
     np.random.seed(seed)
     start_time = time.time()
@@ -211,6 +232,11 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
         task_ids = list(range(task_start, task_end))
         actual_tasks = task_end - task_start
         logger.info(f"Evaluating tasks [{task_offset}, {task_offset + actual_tasks}) = {actual_tasks} tasks")
+
+    # Worker sharding for parallel evaluation
+    if num_workers > 1:
+        logger.info(f"Sharding {len(task_ids)} tasks across {num_workers} workers (worker_id={worker_id})")
+        task_ids = task_ids[worker_id::num_workers]
 
     max_steps = MAX_STEPS_MAP.get(suite_name, 300)
 
@@ -250,7 +276,7 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
 
         for episode_idx in range(actual_episodes):
             try:
-                done, steps, ep_latencies = run_single_task_episode(
+                ep = run_single_task_episode(
                     env=env,
                     initial_state=initial_states[episode_idx],
                     task_description=task_description,
@@ -260,15 +286,17 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
                     replan_steps=replan_steps,
                 )
 
-                all_latencies.extend(ep_latencies)
-                if done:
+                all_latencies.extend(ep["infer_latencies_ms"])
+                if ep["success"]:
                     task_successes += 1
                     total_successes += 1
 
                 task_episodes += 1
                 total_episodes += 1
-                status = "SUCCESS" if done else "FAILURE"
-                logger.info(f"  Ep {episode_idx+1}/{actual_episodes}: {status} (steps={steps})")
+                status = "SUCCESS" if ep["success"] else "FAILURE"
+                avg_lat = round(float(np.mean(ep["infer_latencies_ms"])), 2) if ep["infer_latencies_ms"] else 0.0
+                logger.info(f"  Ep {episode_idx+1}/{actual_episodes}: {status} (steps={ep['steps']}, "
+                            f"wall={ep['episode_wall_ms']:.0f}ms, infer_avg={avg_lat:.0f}ms)")
 
                 episode_details.append({
                     "task_id": task_id,
@@ -276,9 +304,13 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
                     "task_name": task_name,
                     "task_description": task_description,
                     "perturbation_category": perturbation_category,
-                    "success": done,
-                    "steps": steps,
-                    "avg_latency_ms": round(float(np.mean(ep_latencies)), 2) if ep_latencies else 0.0,
+                    "success": ep["success"],
+                    "steps": ep["steps"],
+                    "avg_latency_ms": avg_lat,
+                    "episode_wall_ms": ep["episode_wall_ms"],
+                    "total_infer_ms": ep["total_infer_ms"],
+                    "total_env_step_ms": ep["total_env_step_ms"],
+                    "total_preprocess_ms": ep["total_preprocess_ms"],
                 })
 
                 clear_jax_cache()
@@ -293,6 +325,11 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
                     "perturbation_category": perturbation_category,
                     "success": False,
                     "steps": 0,
+                    "avg_latency_ms": 0.0,
+                    "episode_wall_ms": 0.0,
+                    "total_infer_ms": 0.0,
+                    "total_env_step_ms": 0.0,
+                    "total_preprocess_ms": 0.0,
                     "error": str(e),
                 })
                 task_episodes += 1
@@ -318,12 +355,20 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
     total_rate = total_successes / total_episodes if total_episodes > 0 else 0
     avg_latency = np.mean(all_latencies) if all_latencies else 0
     p95_latency = np.percentile(all_latencies, 95) if all_latencies else 0
+    duration = end_time - start_time
+
+    # Throughput and wall-time distribution
+    total_steps = sum(ed["steps"] for ed in episode_details)
+    steps_per_second = round(total_steps / duration, 2) if duration > 0 else 0.0
+    episodes_per_minute = round(total_episodes / (duration / 60), 2) if duration > 0 else 0.0
+    episode_wall_times = [ed["episode_wall_ms"] for ed in episode_details if ed.get("episode_wall_ms", 0) > 0]
 
     logger.info("=" * 60)
     logger.info(f"RESULTS: {suite_name} | NFE={nfe} | {actual_tasks} tasks | {num_episodes} ep/task")
     logger.info("=" * 60)
     logger.info(f"Total: {total_successes}/{total_episodes} ({total_rate*100:.1f}%)")
     logger.info(f"Avg latency: {avg_latency:.1f}ms | P95: {p95_latency:.1f}ms")
+    logger.info(f"Throughput: {steps_per_second} steps/s | {episodes_per_minute} ep/min")
     logger.info("=" * 60)
 
     config_dict = {
@@ -337,14 +382,25 @@ def run_eval_suite(nfe, suite_name, policy, seed, max_tasks, task_offset,
         "seed": seed,
         "checkpoint_path": str(checkpoint),
         "action_horizon": 10,
+        "num_workers": num_workers,
+        "worker_id": worker_id,
     }
     result = build_result_json(
         config_dict, task_results, episode_details, all_latencies,
         total_successes, total_episodes, start_time, end_time,
     )
 
+    # Add throughput and wall-time distribution (new fields)
+    result["timing"]["steps_per_second"] = steps_per_second
+    result["timing"]["episodes_per_minute"] = episodes_per_minute
+    if episode_wall_times:
+        result["timing"]["episode_wall_ms_avg"] = round(float(np.mean(episode_wall_times)), 2)
+        result["timing"]["episode_wall_ms_p50"] = round(float(np.percentile(episode_wall_times, 50)), 2)
+        result["timing"]["episode_wall_ms_p95"] = round(float(np.percentile(episode_wall_times, 95)), 2)
+
     results_dir = str(PROJECT_ROOT / "results" / "libero_plus")
-    filepath = save_result_json(result, results_dir, suite_name)
+    filepath = save_result_json(result, results_dir, suite_name,
+                                num_workers=num_workers, worker_id=worker_id)
 
     return result, filepath
 
@@ -367,3 +423,139 @@ def compute_per_perturbation_summary(all_results):
             "rate": round(rate, 4),
         }
     return summary
+
+
+# ── Worker result merging ─────────────────────────────────
+
+
+def merge_worker_results(results_dir, num_workers, mode, model_type,
+                         replan_steps, num_steps_wait, seed, nfe_values):
+    """合并多个 worker 的部分结果文件为完整结果。"""
+    import datetime as _dt
+
+    results_path = pathlib.Path(results_dir)
+    worker_files = sorted(results_path.glob(f"*_w*_of{num_workers}.json"))
+
+    if not worker_files:
+        logger.error(f"No worker files found in {results_dir} for {num_workers} workers")
+        return
+
+    groups = {}
+    for fpath in worker_files:
+        with open(fpath) as f:
+            data = json.load(f)
+        key = (data["config"]["task_suite"], data["config"]["nfe"])
+        groups.setdefault(key, []).append(data)
+
+    merged_suite_results = []
+    for (suite, nfe), workers in groups.items():
+        logger.info(f"Merging {len(workers)} workers for {suite} nfe={nfe}")
+        merged = _merge_worker_group(workers)
+        merged_suite_results.append(merged)
+
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        rate = merged["overall"]["total_success_rate"]
+        pct = f"{rate * 100:.1f}pct"
+        out_path = results_path / f"{ts}_{suite}_{nfe}nfe_{pct}_merged.json"
+        with open(out_path, "w") as f:
+            json.dump(merged, f, indent=2, ensure_ascii=False)
+        logger.info(f"Merged suite result: {out_path}")
+
+    if len(merged_suite_results) > 1:
+        _save_combined_result(merged_suite_results, results_path, mode,
+                              model_type, replan_steps, num_steps_wait,
+                              seed, nfe_values, num_workers)
+
+
+def _merge_worker_group(worker_results):
+    """合并同一 (suite, nfe) 的多个 worker 结果。"""
+    all_episodes = []
+    for wr in worker_results:
+        all_episodes.extend(wr["episode_details"])
+
+    merged_tasks = {}
+    for wr in worker_results:
+        for task_name, task_data in wr["per_task"].items():
+            if task_name not in merged_tasks:
+                merged_tasks[task_name] = dict(task_data)
+            else:
+                merged_tasks[task_name]["successes"] += task_data["successes"]
+                merged_tasks[task_name]["episodes"] += task_data["episodes"]
+
+    for tn, td in merged_tasks.items():
+        td["rate"] = round(td["successes"] / td["episodes"], 4) if td["episodes"] > 0 else 0.0
+
+    merged_latencies = []
+    for wr in worker_results:
+        merged_latencies.extend(wr["timing"]["all_latencies_ms"])
+
+    total_successes = sum(wr["overall"]["total_successes"] for wr in worker_results)
+    total_episodes = sum(wr["overall"]["total_episodes"] for wr in worker_results)
+    config = dict(worker_results[0]["config"])
+
+    lat_arr = np.array(merged_latencies) if merged_latencies else np.array([0.0])
+    timing = {
+        "all_latencies_ms": merged_latencies,
+        "avg_latency_ms": round(float(np.mean(lat_arr)), 2),
+        "p50_latency_ms": round(float(np.percentile(lat_arr, 50)), 2),
+        "p95_latency_ms": round(float(np.percentile(lat_arr, 95)), 2),
+        "p99_latency_ms": round(float(np.percentile(lat_arr, 99)), 2),
+    }
+
+    metadata = dict(worker_results[0]["metadata"])
+    metadata["end_time"] = worker_results[-1]["metadata"]["end_time"]
+
+    return {
+        "overall": {
+            "total_success_rate": round(total_successes / total_episodes, 4) if total_episodes > 0 else 0.0,
+            "total_episodes": total_episodes,
+            "total_successes": total_successes,
+        },
+        "config": config,
+        "per_task": merged_tasks,
+        "timing": timing,
+        "episode_details": all_episodes,
+        "metadata": metadata,
+    }
+
+
+def _save_combined_result(merged_suite_results, results_path, mode, model_type,
+                          replan_steps, num_steps_wait, seed, nfe_values, num_workers):
+    """从合并后的 suite 结果构建并保存跨 suite/NFE 汇总 JSON。"""
+    import datetime as _dt
+
+    nfe_sorted = sorted(set(r["config"]["nfe"] for r in merged_suite_results))
+    combined = {
+        "benchmark": "libero-plus",
+        "mode": mode,
+        "nfe_values": nfe_sorted,
+        "max_tasks": merged_suite_results[0]["config"].get("max_tasks"),
+        "suites": {},
+        "grand_total_episodes": sum(r["overall"]["total_episodes"] for r in merged_suite_results),
+        "grand_total_successes": sum(r["overall"]["total_successes"] for r in merged_suite_results),
+        "per_perturbation": compute_per_perturbation_summary(merged_suite_results),
+        "metadata": {
+            "end_time": _dt.datetime.now().isoformat(),
+            "hostname": socket.gethostname(),
+            "checkpoint": merged_suite_results[0]["config"]["checkpoint_path"],
+            "model_type": model_type,
+            "replan_steps": replan_steps,
+            "num_workers": num_workers,
+        },
+    }
+    combined["grand_total_rate"] = round(
+        combined["grand_total_successes"] / max(combined["grand_total_episodes"], 1), 4,
+    )
+    for r in merged_suite_results:
+        key = f"{r['config']['task_suite']}_nfe{r['config']['nfe']}"
+        combined["suites"][key] = r["overall"]
+
+    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    nfe_str = "_".join(str(n) for n in nfe_sorted)
+    combined_path = results_path / f"{ts}_combined_{nfe_str}nfe_merged.json"
+    with open(combined_path, "w") as f:
+        json.dump(combined, f, indent=2, ensure_ascii=False)
+    logger.info(f"Combined result: {combined_path}")
+    logger.info(f"Grand total: {combined['grand_total_rate']*100:.1f}%")
+    for cat, stats in sorted(combined.get("per_perturbation", {}).items()):
+        logger.info(f"  {cat}: {stats['rate']*100:.1f}%")

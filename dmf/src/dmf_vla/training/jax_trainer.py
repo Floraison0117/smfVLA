@@ -73,7 +73,15 @@ class _PrefetchIterator:
                     self._queue.put(e)
                 return
             if not self._stop:
-                self._queue.put(batch)
+                # Convert numpy -> JAX device arrays in background thread.
+                # jnp.asarray triggers async H2D transfer that overlaps with
+                # GPU compute on the main thread.
+                jax_batch = _prepare_batch(batch)
+                jit_batch = {
+                    k: v for k, v in jax_batch.items()
+                    if k in ("observation", "actions", "action_mean", "action_std")
+                }
+                self._queue.put(jit_batch)
 
     def __iter__(self):
         return self
@@ -201,9 +209,15 @@ class DMFTrainer:
         )
 
     def _setup_jit_train_step(self):
-        """JIT-compile the training step: split frozen/trainable params, compile grad_fn."""
+        """JIT-compile only value_and_grad(loss_fn) — optimizer + EMA stay eager.
+
+        Frozen params (~3B) are extracted ONCE and passed as explicit JIT args.
+        Metrics returned as JAX arrays — host sync only at log_every cadence.
+        Optimizer/EMA stay eager: they're cheap element-wise ops, and keeping them
+        out of JIT avoids large input/output pytree transfer overhead.
+        """
         logger.info("=" * 60)
-        logger.info("Compiling JIT training step...")
+        logger.info("Compiling JIT training step (grad-only fusion)...")
         logger.info("=" * 60)
 
         _, state = nnx.split(self.model)
@@ -211,134 +225,97 @@ class DMFTrainer:
         all_paths = sorted(flat.keys())
 
         self._trainable_paths = [p for p in all_paths if self.trainable_mask.get(p, False)]
-        frozen_paths = [p for p in all_paths if not self.trainable_mask.get(p, False)]
+        self._frozen_paths = [p for p in all_paths if not self.trainable_mask.get(p, False)]
 
-        self._frozen_dict = {p: flat[p] for p in frozen_paths}
+        # Extract frozen values ONCE — they never change during training
+        self._frozen_values = [_to_array(flat[p]) for p in self._frozen_paths]
 
         n_trainable = sum(_to_array(flat[p]).size for p in self._trainable_paths)
-        n_frozen = sum(_to_array(flat[p]).size for p in frozen_paths)
+        n_frozen = sum(v.size for v in self._frozen_values)
         logger.info(f"  Trainable: {n_trainable:,} params ({n_trainable / 1e6:.1f}M)")
         logger.info(f"  Frozen:    {n_frozen:,} params ({n_frozen / 1e6:.1f}M)")
 
-        frozen_dict = self._frozen_dict
+        frozen_paths = self._frozen_paths
         trainable_paths = self._trainable_paths
         graphdef = self._graphdef
         trainer = self
 
-        def loss_fn(trainable_values, jax_batch, rng):
+        def grad_fn(trainable_vals, frozen_vals, jax_batch, rng):
             from openpi.models.model import Observation
             from dmf_vla.training.dmf_loss import compute_dmf_loss
 
-            # Reconstruct model
-            full = dict(frozen_dict)
-            for p, v in zip(trainable_paths, trainable_values):
+            full = {}
+            for p, v in zip(frozen_paths, frozen_vals):
+                full[p] = v
+            for p, v in zip(trainable_paths, trainable_vals):
                 full[p] = v
             st = nnx.State.from_flat_path(full)
             model = nnx.merge(graphdef, st)
 
-            # Pre-compute vision encoder outputs with stop_gradient to prevent
-            # JVP from tracing through the frozen SigLIP vision encoder.
             observation = Observation.from_dict(jax_batch["observation"])
             prefix_tokens, prefix_mask, prefix_ar_mask = model.embed_prefix(observation)
             prefix_tokens = jax.lax.stop_gradient(prefix_tokens)
             prefix_mask = jax.lax.stop_gradient(prefix_mask)
             prefix_ar_mask = jax.lax.stop_gradient(prefix_ar_mask)
 
-            actions = jax_batch["actions"]
-            action_mean = jax_batch["action_mean"]
-            action_std = jax_batch["action_std"]
-
             model_fn = model._dmf_model_fn(prefix_tokens, prefix_mask, prefix_ar_mask)
 
-            loss, metrics = compute_dmf_loss(
-                model_fn=model_fn,
-                params=None,
+            return compute_dmf_loss(
+                model_fn=model_fn, params=None,
                 observation=observation,
-                actions=actions,
-                action_mean=action_mean,
-                action_std=action_std,
+                actions=jax_batch["actions"],
+                action_mean=jax_batch["action_mean"],
+                action_std=jax_batch["action_std"],
                 rng=rng,
-                p_mean=trainer.P_mean,
-                p_mean_t=trainer.P_mean_t,
+                p_mean=trainer.P_mean, p_mean_t=trainer.P_mean_t,
                 p_mean_r=trainer.P_mean_r,
-                p_std=trainer.P_std,
-                p_std_t=trainer.P_std_t,
+                p_std=trainer.P_std, p_std_t=trainer.P_std_t,
                 p_std_r=trainer.P_std_r,
                 use_logvar=trainer.use_logvar,
             )
-            return loss, metrics
 
-        self._grad_fn = jax.jit(jax.value_and_grad(loss_fn, argnums=0, has_aux=True))
-        logger.info("JIT compilation complete")
+        self._grad_fn = jax.jit(jax.value_and_grad(grad_fn, has_aux=True))
+        logger.info("JIT function created (compiles on first call)")
 
-    def train_step(
-        self,
-        model: nnx.Module,
-        optimizer: optax.GradientTransformation,
-        opt_state: optax.OptState,
-        jax_batch: dict[str, Any],
-        rng: jax.Array,
-    ) -> tuple[nnx.Module, optax.OptState, dict[str, float]]:
-        """Single training step.  jax_batch must already be JAX arrays (strings stripped)."""
-
-        _, state = nnx.split(model)
-        flat = state.flat_state()
-        trainable_values = [flat[p] for p in self._trainable_paths]
-
-        # Strip non-array fields that JIT cannot trace
-        jit_batch = {
-            k: v for k, v in jax_batch.items()
-            if k in ("observation", "actions", "action_mean", "action_std")
-        }
-
-        (loss, metrics), grads = self._grad_fn(trainable_values, jit_batch, rng)
-
-        updates, new_opt_state = optimizer.update(grads, opt_state, params=trainable_values)
-        new_trainable_values = optax.apply_updates(trainable_values, updates)
-
-        # EMA update on trainable params
-        if self.ema_values is not None:
-            new_arrs = [_to_array(v) for v in new_trainable_values]
-            self.ema_values = [
-                self.ema_decay * ema + (1.0 - self.ema_decay) * new
-                for ema, new in zip(self.ema_values, new_arrs)
-            ]
-
-        # Reconstruct model
-        full = dict(self._frozen_dict)
-        for p, v in zip(self._trainable_paths, new_trainable_values):
+    def _reconstruct_model(self, trainable_values):
+        """Reconstruct nnx.Module from trainable + frozen values (for checkpointing)."""
+        full = {}
+        for p, v in zip(self._frozen_paths, self._frozen_values):
             full[p] = v
-        new_state = nnx.State.from_flat_path(full)
-        model = nnx.merge(self._graphdef, new_state)
-
-        # Gradient norm
-        grad_norm = jnp.sqrt(sum(
-            jnp.sum(jnp.square(_to_array(g))) for g in grads if g is not None
-        ))
-        metrics["grad_norm"] = float(grad_norm)
-
-        return model, new_opt_state, {k: float(v) for k, v in metrics.items()}
+        for p, v in zip(self._trainable_paths, trainable_values):
+            full[p] = v
+        st = nnx.State.from_flat_path(full)
+        return nnx.merge(self._graphdef, st)
 
     def train(
         self,
         data_loader,
         resume_from: str | None = None,
     ):
-        if resume_from:
-            self._load_checkpoint(resume_from)
-
+        # Setup JIT FIRST (sets _trainable_paths, _frozen_paths, _frozen_values)
         self._setup_jit_train_step()
 
-        # Initialize optimizer state from current trainable params
+        if resume_from:
+            self._load_checkpoint(resume_from)
+            # Re-extract frozen_values from loaded model
+            _, state = nnx.split(self.model)
+            flat = state.flat_state()
+            self._frozen_values = [_to_array(flat[p]) for p in self._frozen_paths]
+
+        # Extract trainable values from model (once)
         _, state = nnx.split(self.model)
         flat = state.flat_state()
-        trainable_values = [flat[p] for p in self._trainable_paths]
+        trainable_values = [_to_array(flat[p]) for p in self._trainable_paths]
+        frozen_values = self._frozen_values
+
+        # Init optimizer state
         opt_state = self.optimizer.init(trainable_values)
 
-        # Initialize EMA from current trainable params
+        # Init EMA
         if self.ema_values is None:
             self.ema_values = [_to_array(v).copy() for v in trainable_values]
             logger.info(f"Initialized EMA ({len(self.ema_values)} arrays, decay={self.ema_decay})")
+        ema_values = self.ema_values
 
         # WandB
         use_wandb = False
@@ -354,7 +331,6 @@ class DMFTrainer:
             except Exception as e:
                 logger.warning(f"WandB init failed: {e}")
 
-        model = self.model
         rng = jax.random.PRNGKey(42)
         start_time = time.time()
 
@@ -366,37 +342,49 @@ class DMFTrainer:
         logger.info(f"  P_mean: {self.P_mean}, P_mean_t: {self.P_mean_t}, P_mean_r: {self.P_mean_r}")
         logger.info(f"  JAX backend: {jax.default_backend()}, devices: {jax.devices('gpu')}")
 
-        # Use prefetch to overlap data loading with GPU computation
+        # Prefetch iterator (prepares batches + async H2D in background thread)
         prefetch = _PrefetchIterator(data_loader, maxsize=2)
 
         while self.step < self.total_steps:
-            batch = next(prefetch)
-
-            jax_batch = _prepare_batch(batch)
+            jit_batch = next(prefetch)  # already JAX device arrays
 
             rng, step_rng = jax.random.split(rng)
             step_start = time.time()
 
-            model, opt_state, metrics = self.train_step(
-                model, self.optimizer, opt_state, jax_batch, step_rng
+            # Grad-only JIT; optimizer + EMA stay eager (cheap element-wise ops)
+            (loss, metrics), grads = self._grad_fn(
+                trainable_values, frozen_values, jit_batch, step_rng
             )
+            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_values)
+            trainable_values = optax.apply_updates(trainable_values, updates)
+            ema_values = [
+                self.ema_decay * ema + (1.0 - self.ema_decay) * new
+                for ema, new in zip(ema_values, trainable_values)
+            ]
+            # Grad norm as JAX array (no host sync until log_every)
+            grad_norm = jnp.sqrt(sum(
+                jnp.sum(jnp.square(g)) for g in grads if g is not None
+            ))
 
             self.step += 1
 
             if self.step % self.log_every == 0:
+                # Sync to host ONLY at log_every cadence
+                metrics_cpu = {k: float(v) for k, v in metrics.items()}
+                metrics_cpu["grad_norm"] = float(grad_norm)
                 elapsed = time.time() - start_time
                 steps_per_sec = self.step / elapsed
                 step_time_ms = (time.time() - step_start) * 1000
 
                 log_msg = (
                     f"Step {self.step:6d}/{self.total_steps} | "
-                    f"loss={metrics['loss_total']:.4f} | "
-                    f"fm={metrics['loss_fm']:.4f} | "
-                    f"mf={metrics['loss_mf']:.4f} | "
-                    f"grad={metrics['grad_norm']:.4f} | "
-                    f"t_fm={metrics['t_fm_mean']:.3f} | "
-                    f"t_mf={metrics['t_mf_mean']:.3f} | "
-                    f"r_mf={metrics['r_mf_mean']:.3f} | "
+                    f"loss={metrics_cpu['loss_total']:.4f} | "
+                    f"fm={metrics_cpu['loss_fm']:.4f} | "
+                    f"mf={metrics_cpu['loss_mf']:.4f} | "
+                    f"grad={metrics_cpu['grad_norm']:.4f} | "
+                    f"t_fm={metrics_cpu['t_fm_mean']:.3f} | "
+                    f"t_mf={metrics_cpu['t_mf_mean']:.3f} | "
+                    f"r_mf={metrics_cpu['r_mf_mean']:.3f} | "
                     f"{steps_per_sec:.1f} steps/s | "
                     f"{step_time_ms:.0f}ms/step"
                 )
@@ -406,20 +394,20 @@ class DMFTrainer:
                     try:
                         import wandb
                         wandb_metrics = {
-                            "train/loss_total": metrics["loss_total"],
-                            "train/loss_fm": metrics["loss_fm"],
-                            "train/loss_mf": metrics["loss_mf"],
-                            "train/loss_fm_logvar": metrics.get("loss_fm_logvar", 0),
-                            "train/loss_mf_logvar": metrics.get("loss_mf_logvar", 0),
-                            "train/grad_norm": metrics["grad_norm"],
-                            "train/t_fm_mean": metrics["t_fm_mean"],
-                            "train/t_mf_mean": metrics["t_mf_mean"],
-                            "train/r_mf_mean": metrics["r_mf_mean"],
-                            "train/t_mf_r_mf_gap": metrics.get("t_mf_r_mf_gap", 0),
-                            "train/du_dt_norm": metrics.get("du_dt_norm", 0),
-                            "train/u_norm": metrics.get("u_norm", 0),
-                            "train/logvar_fm_mean": metrics.get("logvar_fm_mean", 0),
-                            "train/logvar_mf_mean": metrics.get("logvar_mf_mean", 0),
+                            "train/loss_total": metrics_cpu["loss_total"],
+                            "train/loss_fm": metrics_cpu["loss_fm"],
+                            "train/loss_mf": metrics_cpu["loss_mf"],
+                            "train/loss_fm_logvar": metrics_cpu.get("loss_fm_logvar", 0),
+                            "train/loss_mf_logvar": metrics_cpu.get("loss_mf_logvar", 0),
+                            "train/grad_norm": metrics_cpu["grad_norm"],
+                            "train/t_fm_mean": metrics_cpu["t_fm_mean"],
+                            "train/t_mf_mean": metrics_cpu["t_mf_mean"],
+                            "train/r_mf_mean": metrics_cpu["r_mf_mean"],
+                            "train/t_mf_r_mf_gap": metrics_cpu.get("t_mf_r_mf_gap", 0),
+                            "train/du_dt_norm": metrics_cpu.get("du_dt_norm", 0),
+                            "train/u_norm": metrics_cpu.get("u_norm", 0),
+                            "train/logvar_fm_mean": metrics_cpu.get("logvar_fm_mean", 0),
+                            "train/logvar_mf_mean": metrics_cpu.get("logvar_mf_mean", 0),
                             "train/steps_per_sec": steps_per_sec,
                             "train/step_time_ms": step_time_ms,
                             "train/lr": float(self.optimizer[1].learning_rate(self.step)),
@@ -430,11 +418,11 @@ class DMFTrainer:
                         pass
 
             if self.step % self.save_every == 0:
-                self._save_checkpoint(model, opt_state)
+                self._save_checkpoint(trainable_values, opt_state, ema_values)
                 logger.info(f"Saved checkpoint at step {self.step}")
 
         # Final save
-        self._save_checkpoint(model, opt_state)
+        self._save_checkpoint(trainable_values, opt_state, ema_values)
         logger.info("Training complete!")
 
         prefetch.close()
@@ -446,10 +434,12 @@ class DMFTrainer:
             except Exception:
                 pass
 
-        self.model = model
-        return model
+        # Reconstruct model for external access
+        self.model = self._reconstruct_model(trainable_values)
+        self.ema_values = ema_values
+        return self.model
 
-    def _save_checkpoint(self, model, opt_state):
+    def _save_checkpoint(self, trainable_values, opt_state, ema_values):
         """Save EMA model to params/ (eval), training model to params_training/ (resume)."""
         import orbax.checkpoint as ocp
 
@@ -459,20 +449,24 @@ class DMFTrainer:
         checkpointer = ocp.PyTreeCheckpointer()
 
         # EMA model -> params/ (loaded by eval)
-        if self.ema_values is not None:
-            full_ema = dict(self._frozen_dict)
-            for p, v in zip(self._trainable_paths, self.ema_values):
-                full_ema[p] = v
-            ema_state = nnx.State.from_flat_path(full_ema)
-            _, ema_nnx_state = nnx.split(nnx.merge(self._graphdef, ema_state))
-            checkpointer.save(str(ckpt_dir / "params"), ema_nnx_state.to_pure_dict())
-            logger.info(f"  Saved EMA model to params/")
-        else:
-            _, train_nnx_state = nnx.split(model)
-            checkpointer.save(str(ckpt_dir / "params"), train_nnx_state.to_pure_dict())
+        full_ema = {}
+        for p, v in zip(self._frozen_paths, self._frozen_values):
+            full_ema[p] = v
+        for p, v in zip(self._trainable_paths, ema_values):
+            full_ema[p] = v
+        ema_state = nnx.State.from_flat_path(full_ema)
+        _, ema_nnx_state = nnx.split(nnx.merge(self._graphdef, ema_state))
+        checkpointer.save(str(ckpt_dir / "params"), ema_nnx_state.to_pure_dict())
+        logger.info(f"  Saved EMA model to params/")
 
         # Training model -> params_training/ (for resume)
-        _, train_nnx_state = nnx.split(model)
+        full_train = {}
+        for p, v in zip(self._frozen_paths, self._frozen_values):
+            full_train[p] = v
+        for p, v in zip(self._trainable_paths, trainable_values):
+            full_train[p] = v
+        train_state_obj = nnx.State.from_flat_path(full_train)
+        _, train_nnx_state = nnx.split(nnx.merge(self._graphdef, train_state_obj))
         checkpointer.save(str(ckpt_dir / "params_training"), train_nnx_state.to_pure_dict())
 
         # Optimizer state -> opt_state/

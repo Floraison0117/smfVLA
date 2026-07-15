@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description="LIBERO-Plus evaluation")
-    parser.add_argument("--model-type", type=str, default="pi05", choices=["pi05", "dmf"])
+    parser.add_argument("--model-type", type=str, default="pi05", choices=["pi05", "dmf", "piflow"])
     parser.add_argument("--nfe", type=int, nargs="+", default=[1], choices=[1, 2, 4, 10])
     parser.add_argument("--mode", type=str, default="quick", choices=["quick", "normal", "fullset"])
     parser.add_argument("--checkpoint", type=str, default=None)
@@ -46,14 +46,44 @@ def main():
     parser.add_argument("--replan-steps", type=int, default=5)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--results-dir", type=str, default=None)
+    parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument("--worker-id", type=int, default=0)
+    parser.add_argument("--merge-results", action="store_true",
+                        help="Merge worker result files instead of running eval")
     args = parser.parse_args()
+
+    if args.worker_id >= args.num_workers:
+        parser.error(f"worker-id ({args.worker_id}) must be < num-workers ({args.num_workers})")
+
+    # Merge mode: combine existing worker result files and exit
+    if args.merge_results:
+        from eval.libero_plus.runner import merge_worker_results
+        if args.results_dir is None:
+            args.results_dir = str(PROJECT_ROOT / "results" / "libero_plus")
+        merge_worker_results(
+            results_dir=args.results_dir,
+            num_workers=args.num_workers,
+            mode=args.mode,
+            model_type=args.model_type,
+            replan_steps=args.replan_steps,
+            num_steps_wait=args.num_steps_wait,
+            seed=args.seed,
+            nfe_values=args.nfe,
+        )
+        return
 
     # 默认 checkpoint
     if args.checkpoint is None:
         if args.model_type == "dmf":
-            # 查找 dmf_finetuned 下最新 step
             dmf_dir = PROJECT_ROOT / "checkpoints" / "dmf_finetuned"
             steps = sorted(dmf_dir.glob("step_*")) if dmf_dir.exists() else []
+            if steps:
+                args.checkpoint = str(steps[-1])
+            else:
+                args.checkpoint = str(PROJECT_ROOT / "checkpoints" / "pi05_libero")
+        elif args.model_type == "piflow":
+            pf_dir = PROJECT_ROOT / "checkpoints" / "piflow_finetuned"
+            steps = sorted(pf_dir.glob("step_*")) if pf_dir.exists() else []
             if steps:
                 args.checkpoint = str(steps[-1])
             else:
@@ -100,6 +130,7 @@ def main():
                 replan_steps=args.replan_steps, num_steps_wait=args.num_steps_wait,
                 checkpoint=args.checkpoint, num_episodes=num_episodes,
                 sampled_task_names=sampled,
+                num_workers=args.num_workers, worker_id=args.worker_id,
             )
             if result is not None:
                 all_results.append(result)

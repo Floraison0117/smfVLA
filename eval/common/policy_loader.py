@@ -1,4 +1,4 @@
-"""LIBERO-Plus 模型加载：pi0.5（auto-detect JAX/PyTorch）和 DMF（JAX/nnx）。"""
+"""LIBERO-Plus 模型加载：pi0.5（auto-detect JAX/PyTorch）、DMF 和 Pi-Flow（JAX/nnx）。"""
 
 import logging
 import pathlib
@@ -30,7 +30,7 @@ def load_checkpoint_with_single_device_sharding(checkpointer, checkpoint_path):
 
 
 def _detect_checkpoint_type(checkpoint_path: pathlib.Path) -> str:
-    """检测 checkpoint 类型：original（pi0.5）或 dmf。"""
+    """检测 checkpoint 类型：original（pi0.5）、dmf 或 piflow。"""
     import jax
     import flax.traverse_util as traverse_util
     import orbax.checkpoint as ocp
@@ -61,6 +61,8 @@ def _detect_checkpoint_type(checkpoint_path: pathlib.Path) -> str:
         params = params["model"]
 
     flat = traverse_util.flatten_dict(params)
+    if any("gmm_mean_proj" in "/".join(k) for k in flat.keys()):
+        return "piflow"
     if any("logvar_proj" in "/".join(k) for k in flat.keys()):
         return "dmf"
     return "original"
@@ -72,7 +74,7 @@ def load_policy(nfe: int, checkpoint_dir: str, model_type: str):
     Args:
         nfe: 采样步数 (1, 2, 4, 10)
         checkpoint_dir: checkpoint 目录路径
-        model_type: "pi05" 或 "dmf"
+        model_type: "pi05"、"dmf" 或 "piflow"
     """
     import jax
     from openpi.policies import policy_config as _policy_config
@@ -83,7 +85,83 @@ def load_policy(nfe: int, checkpoint_dir: str, model_type: str):
     ckpt_type = _detect_checkpoint_type(checkpoint_path)
     logger.info(f"Checkpoint type: {ckpt_type}, model_type={model_type}, NFE={nfe}")
 
-    if model_type == "dmf" or ckpt_type == "dmf":
+    if model_type == "piflow" or ckpt_type == "piflow":
+        logger.info(f"Loading Pi05PiFlow model for {nfe}-NFE inference...")
+        import flax.nnx as nnx
+        import flax.traverse_util as traverse_util
+        import orbax.checkpoint as ocp
+
+        try:
+            from piflow_vla.models.pi05_piflow import Pi05PiFlow, Pi05PiFlowConfig
+        except ImportError:
+            logger.error("Pi-Flow not available. Install piflow to use Pi-Flow checkpoints")
+            raise
+
+        pf_config = Pi05PiFlowConfig(
+            pi05=True,
+            action_horizon=train_config.model.action_horizon,
+            action_dim=train_config.model.action_dim,
+            discrete_state_input=False,
+            num_components=8,
+            inner_substeps=8,
+        )
+
+        checkpointer = ocp.PyTreeCheckpointer()
+        params = load_checkpoint_with_single_device_sharding(
+            checkpointer, checkpoint_path / "params"
+        )
+
+        model = pf_config.create(jax.random.key(0))
+        graphdef, state = nnx.split(model)
+        pure_state = state.to_pure_dict()
+
+        flat_params = traverse_util.flatten_dict(params)
+        flat_state = traverse_util.flatten_dict(pure_state)
+
+        loaded_count = 0
+        for key in flat_state:
+            if key in flat_params:
+                flat_state[key] = flat_params[key]
+                loaded_count += 1
+            elif any(p in "/".join(key) for p in ("gmm_mean_proj", "gmm_logstd_proj", "gmm_logweight_proj")):
+                logger.info(f"Skipping (keeping init): {'/'.join(key)}")
+            else:
+                logger.warning(f"Not in checkpoint: {'/'.join(key)}")
+
+        logger.info(f"Loaded {loaded_count} parameters")
+        pure_state = traverse_util.unflatten_dict(flat_state)
+        state.replace_by_pure_dict(pure_state)
+        model = nnx.merge(graphdef, state)
+
+        from openpi.policies import policy as _policy
+        from openpi import transforms as _transforms
+        from openpi.training import checkpoints as _checkpoints
+
+        data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+        base_ckpt = PROJECT_ROOT / "checkpoints" / "pi05_libero"
+        assets_dir = checkpoint_path / "assets"
+        if not assets_dir.exists():
+            assets_dir = base_ckpt / "assets"
+            logger.info(f"Using base checkpoint assets: {assets_dir}")
+        norm_stats = _checkpoints.load_norm_stats(assets_dir, data_config.asset_id)
+
+        policy = _policy.Policy(
+            model,
+            transforms=[
+                _transforms.InjectDefaultPrompt(None),
+                *data_config.data_transforms.inputs,
+                _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.model_transforms.inputs,
+            ],
+            output_transforms=[
+                *data_config.model_transforms.outputs,
+                _transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.data_transforms.outputs,
+            ],
+            sample_kwargs={"num_steps": nfe, "method": "gmflow"},
+        )
+        return policy
+    elif model_type == "dmf" or ckpt_type == "dmf":
         logger.info(f"Loading Pi05DMF model for {nfe}-NFE inference...")
         import flax.nnx as nnx
         import flax.traverse_util as traverse_util

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""CALVIN 评测入口（pi0.5 PyTorch，官方 ABCD->D 协议）。
+"""CALVIN 评测入口（JAX backend，支持 pi0.5 / DMF / Pi-Flow，官方 ABCD->D 协议）。
 
 用法:
     python -m eval.calvin.main --model-type pi05 --nfe 1 --mode quick
-    python -m eval.calvin.main --model-type pi05 --nfe 10 --mode normal
-    python -m eval.calvin.main --model-type pi05 --nfe 10 --mode fullset
+    python -m eval.calvin.main --model-type dmf --nfe 10 --mode normal
+    python -m eval.calvin.main --model-type piflow --nfe 1 --mode fullset
 """
 
 import argparse
@@ -16,23 +16,24 @@ import time
 import numpy as np
 from omegaconf import OmegaConf
 
-from eval.common import setup_paths
-from eval.common.utils import build_result_json, save_result_json
+from eval.calvin.protocol import count_success, get_sequences
+from eval.calvin.runner import (
+    EP_LEN,
+    CalvinModel,
+    _load_calvin_policy,
+    evaluate_sequence,
+    make_env,
+)
 
 # CALVIN 路径（必须在 import calvin_agent 等之前）
 from eval.calvin.utils import (
     get_calvin_validation_path,
     setup_calvin_paths,
 )
-from eval.calvin.runner import (
-    EP_LEN,
-    Pi05CalvinModel,
-    _load_calvin_policy,
-    evaluate_sequence,
-    make_env,
-)
-from eval.calvin.protocol import count_success, get_sequences
+from eval.common import setup_paths
+from eval.common.utils import build_result_json, save_result_json
 
+# JAX will use GPU if available, CPU otherwise
 setup_calvin_paths()
 setup_paths()
 
@@ -57,19 +58,35 @@ PRESETS = {
 
 def main():
     parser = argparse.ArgumentParser(description="CALVIN benchmark eval (pi0.5, any NFE)")
-    parser.add_argument("--model-type", type=str, default="pi05", choices=["pi05"])
+    parser.add_argument("--model-type", type=str, default="pi05", choices=["pi05", "dmf", "piflow"])
     parser.add_argument("--nfe", type=int, default=1, choices=[1, 2, 4, 10])
     parser.add_argument("--mode", type=str, default="quick", choices=["quick", "normal", "fullset"])
-    parser.add_argument("--checkpoint", type=str,
-                        default="/root/autodl-tmp/checkpoints/pi05_calvin_pt")
+    parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--num-sequences", type=int, default=None)
     parser.add_argument("--replan-steps", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--use-egl", action="store_true", default=True)
     parser.add_argument("--no-use-egl", dest="use_egl", action="store_false")
-    parser.add_argument("--results-dir", type=str,
-                        default="/root/autodl-tmp/eval/results/calvin")
+    parser.add_argument("--results-dir", type=str, default="/root/autodl-tmp/eval/results/calvin")
     args = parser.parse_args()
+
+    if args.checkpoint is None:
+        if args.model_type == "pi05":
+            args.checkpoint = "/root/autodl-tmp/checkpoints/pi05_calvin_jax"
+        elif args.model_type == "dmf":
+            dmf_dir = pathlib.Path("/root/autodl-tmp/checkpoints/dmf_finetuned")
+            steps = sorted(dmf_dir.glob("step_*")) if dmf_dir.exists() else []
+            if steps:
+                args.checkpoint = str(steps[-1])
+            else:
+                args.checkpoint = "/root/autodl-tmp/checkpoints/pi05_libero"
+        elif args.model_type == "piflow":
+            piflow_dir = pathlib.Path("/root/autodl-tmp/checkpoints/piflow_finetuned")
+            steps = sorted(piflow_dir.glob("step_*")) if piflow_dir.exists() else []
+            if steps:
+                args.checkpoint = str(steps[-1])
+            else:
+                args.checkpoint = "/root/autodl-tmp/checkpoints/pi05_libero"
 
     # 应用 preset
     preset = PRESETS[args.mode]
@@ -80,24 +97,25 @@ def main():
     np.random.seed(args.seed)
     start_time = time.time()
 
-    logger.info(f"CALVIN eval | model={args.model_type} | mode={args.mode} "
-                f"| dataset={dataset} | nfe={args.nfe} | seqs={args.num_sequences}")
+    logger.info(
+        f"CALVIN eval | model={args.model_type} | mode={args.mode} "
+        f"| dataset={dataset} | nfe={args.nfe} | seqs={args.num_sequences}"
+    )
 
     # 加载 policy
-    policy = _load_calvin_policy(args.nfe, args.checkpoint)
-    model = Pi05CalvinModel(policy, replan_steps=args.replan_steps)
+    policy = _load_calvin_policy(args.nfe, args.checkpoint, args.model_type)
+    model = CalvinModel(policy, replan_steps=args.replan_steps)
 
     # 环境
     val_path = get_calvin_validation_path(dataset)
     if not (val_path / ".hydra" / "merged_config.yaml").exists():
-        raise FileNotFoundError(
-            f"Missing scene config: {val_path}/.hydra/merged_config.yaml"
-        )
+        raise FileNotFoundError(f"Missing scene config: {val_path}/.hydra/merged_config.yaml")
     logger.info(f"Creating CALVIN env (dataset={dataset}, use_egl={args.use_egl})")
     env = make_env(val_path, use_egl=args.use_egl)
 
     # task_oracle + 语言标注
     import hydra
+
     task_cfg = OmegaConf.load(CONF_DIR / "callbacks/rollout/tasks/new_playtable_tasks.yaml")
     task_oracle = hydra.utils.instantiate(task_cfg)
     val_annotations = OmegaConf.load(CONF_DIR / "annotations/new_playtable_validation.yaml")
@@ -114,9 +132,13 @@ def main():
             env, model, task_oracle, initial_state, eval_sequence, val_annotations
         )
         results.append(r)
-        per_sequence.append({
-            "seq_idx": i, "success_count": int(r), "chain": list(eval_sequence),
-        })
+        per_sequence.append(
+            {
+                "seq_idx": i,
+                "success_count": int(r),
+                "chain": list(eval_sequence),
+            }
+        )
         chain_sr = count_success(results)
         desc = " ".join(f"{k + 1}/5:{v * 100:.1f}%" for k, v in enumerate(chain_sr))
         logger.info(f"[{i + 1}/{len(eval_sequences)}] chain_success={r}/5 | {desc}")

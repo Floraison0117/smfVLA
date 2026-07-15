@@ -1,0 +1,66 @@
+# Pi-Flow GPU smoke test config — fake data, 50 steps, batch 16.
+# Used to verify JIT compilation on GPU + measure throughput + check memory.
+
+method: "piflow"
+
+action_horizon: 10
+action_dim: 32
+action_dim_raw: 7
+discrete_state_input: false
+
+num_components: 8
+inner_substeps: 8
+teacher_query_points: 4
+nfe: 1
+
+training_steps: 50
+batch_size: 16
+learning_rate: 1.0e-4
+weight_decay: 0.01
+warmup_steps: 5
+gradient_clip_norm: 1.0
+precision: "bfloat16"
+
+ema_decay: 0.9999
+
+checkpoint_dir: /tmp/piflow_gpu_smoke_ckpt
+save_every: 999
+log_every: 1
+
+wandb:
+  project: null
+  entity: null
+  run_name: piflow_gpu_smoke
+  tags: ["smoke", "gpu"]
+
+# Non-existent path -> triggers fake data loader
+dataset_path: /tmp/nonexistent_smoke_dataset
+
+checkpoint: /root/autodl-tmp/checkpoints/pi05_libero
+
+freeze:
+  - "PaliGemma/img/**"
+  - "PaliGemma/llm/embedder/**"
+  - "PaliGemma/llm/final_norm/scale"
+  - "PaliGemma/llm/layers/attn/q_einsum/w"
+  - "PaliGemma/llm/layers/attn/kv_einsum/w"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
+  - "PaliGemma/llm/layers/mlp/gating_einsum"
+  - "PaliGemma/llm/layers/mlp/linear"
+  - "PaliGemma/llm/layers/pre_attention_norm/scale"
+  - "PaliGemma/llm/layers/pre_ffw_norm/scale"
+
+trainable:
+  - "PaliGemma/llm/layers/attn/q_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
+  - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
+  - "PaliGemma/llm/layers/mlp_1/**"
+  - "PaliGemma/llm/layers/pre_attention_norm_1/**"
+  - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
+  - "PaliGemma/llm/final_norm_1/**"
+  - "action_in_proj/**"
+  - "time_mlp_in/**"
+  - "time_mlp_out/**"
+  - "gmm_mean_proj/**"
+  - "gmm_logstd_proj/**"
+  - "gmm_logweight_proj/**"

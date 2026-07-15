@@ -18,6 +18,12 @@ for _p in (_dmf_src, _openpi_src):
 # JAX must use GPU
 os.environ["JAX_PLATFORMS"] = "cuda"
 os.environ["JAX_COMPILATION_CACHE_MAX_SIZE"] = "134217728"
+# Prevent XLA from autotuning GEMM fusions at runtime (avoids large allocation spikes).
+# Default is autotune_level=4; level=0 uses pre-compiled heuristics (+10% time, -80% peak ram).
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=0"
+# Increase memory fraction from JAX default 0.75 to 0.90.  Must be set before jax import.
+# JAX+jvp through 3B model runs at high peak; 75% of 98GB = 73.5GB is too tight for bs=32+JVP.
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.90"
 
 import jax
 jax.config.update("jax_platforms", "cuda")

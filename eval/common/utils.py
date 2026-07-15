@@ -21,6 +21,7 @@ def setup_paths():
     """添加评测所需的 sys.path 条目（幂等）。"""
     paths = [
         str(PROJECT_ROOT / "dmf" / "src"),
+        str(PROJECT_ROOT / "piflow" / "src"),
         str(OPENPI_DIR / "src"),
         str(OPENPI_DIR / "packages" / "openpi-client" / "src"),
     ]
@@ -76,7 +77,7 @@ def build_result_json(config_dict, task_results, episode_details, all_latencies,
     }
 
 
-def save_result_json(result_dict, results_dir, suite_name):
+def save_result_json(result_dict, results_dir, suite_name, num_workers=1, worker_id=0):
     """保存结果 JSON 到 results_dir，文件名含时间戳。"""
     results_path = pathlib.Path(results_dir)
     results_path.mkdir(parents=True, exist_ok=True)
@@ -85,7 +86,8 @@ def save_result_json(result_dict, results_dir, suite_name):
     total_rate = result_dict["overall"]["total_success_rate"]
     nfe = result_dict["config"]["nfe"]
     pct_str = f"{total_rate * 100:.1f}pct"
-    filename = f"{ts}_{suite_name}_{nfe}nfe_{pct_str}.json"
+    worker_suffix = f"_w{worker_id}_of{num_workers}" if num_workers > 1 else ""
+    filename = f"{ts}_{suite_name}_{nfe}nfe_{pct_str}{worker_suffix}.json"
     filepath = results_path / filename
 
     with open(filepath, "w") as f:

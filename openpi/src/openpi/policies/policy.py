@@ -61,7 +61,12 @@ class Policy(BasePolicy):
             self._sample_actions = model.sample_actions
         else:
             # JAX model setup
-            self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            # Mark sample_kwargs keys (e.g. num_steps, method) as static so that
+            # they are not traced by jax.jit (they control control-flow, not data).
+            _static = list(self._sample_kwargs.keys()) if self._sample_kwargs else None
+            self._sample_actions = nnx_utils.module_jit(
+                model.sample_actions, static_argnames=_static
+            )
             self._rng = rng or jax.random.key(0)
 
     @override
