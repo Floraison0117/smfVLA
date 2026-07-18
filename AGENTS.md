@@ -18,10 +18,11 @@
   `piflow_vla` (under `<method>/src/`). SnapFlow's model subclasses SMF's
   `Pi05SMF`; Pi-Flow's `Pi05PiFlow` subclasses `openpi.models.pi0.Pi0` directly.
 - Shared finetune base for all methods: `checkpoints/pi05_libero/`.
-- **Nested git repos:** `openpi/`, `smfVLA/`, and `dmf/` each have their own
-  `.git` — they are embedded repos (not submodules). Commits inside them are
-  independent of the root repo. `snapflow/`, `freeflow/`, and `piflow/` are
-  tracked by the root repo directly.
+- **Single root repo:** all of `openpi/`, `smfVLA/`, `snapflow/`, `freeflow/`,
+  `dmf/`, and `piflow/` are tracked directly by the root repo — no nested
+  `.git`, no submodules. (Previously `openpi/`, `smfVLA/`, and `dmf/` were
+  embedded git repos; they were flattened into the root repo in commit
+  `4bb9e22`. The remote is `Floraison0117/smfVLA.git`.)
 - `datasets/` and `checkpoints/` are gitignored — present on disk but never
   committed. Same for `logs/`, `wandb/`, `*.log`.
 - Root `scripts/` holds checkpoint utilities (NOT method training scripts):
