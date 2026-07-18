@@ -12,7 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OPENPI_DIR="$PROJECT_ROOT/third_party/openpi"
-CONFIG_PATH="${1:-$PROJECT_ROOT/configs/train/smf_base_libero.yaml}"
+CONFIG_PATH="${1:-$PROJECT_ROOT/configs/train/smf_base_libero_plus.yaml}"
 CONDA_ENV="openpi_server"
 
 # ── 验证路径 ──────────────────────────────────────────────
@@ -31,6 +31,11 @@ export PYTHONPATH="$PROJECT_ROOT/src:$OPENPI_DIR/src:$OPENPI_DIR/packages/openpi
 # JAX 编译缓存（避免每次重启重新 JIT 编译）
 export JAX_COMPILATION_CACHE_DIR="$PROJECT_ROOT/.jax_cache"
 mkdir -p "$JAX_COMPILATION_CACHE_DIR"
+# ── JAX 关键环境变量（必须在 python 启动 / import jax 前设置）──────────
+export JAX_PLATFORMS=cuda
+export JAX_COMPILATION_CACHE_MAX_SIZE=134217728
+export XLA_FLAGS="--xla_gpu_autotune_level=0"
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.90
 # WANDB_API_KEY: 从环境变量读取，如果未设置则提示用户
 if [ -z "${WANDB_API_KEY:-}" ]; then
     echo "警告: WANDB_API_KEY 未设置，WandB 记录将被跳过"

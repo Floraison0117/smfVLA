@@ -1,5 +1,7 @@
-# Pi-Flow training configuration for LIBERO-Plus
+# Pi-Flow training configuration for CALVIN
 # Velocity imitation distillation: student GMFlow policy learns from frozen teacher
+# 数据：CALVIN D-D training subset → LeRobot parquet（见 dmf/scripts/convert_calvin_data_to_lerobot.py）
+# base checkpoint：pi05_calvin（CALVIN 域，LoRA 合并后的非 LoRA checkpoint）
 
 method: "piflow"
 
@@ -29,22 +31,22 @@ precision: "bfloat16"
 ema_decay: 0.9999
 
 # Checkpointing
-checkpoint_dir: /root/autodl-tmp/checkpoints/piflow_finetuned
-save_every: 10000
+checkpoint_dir: /root/autodl-tmp/checkpoints/piflow_finetuned_calvin
+save_every: 2000
 log_every: 50
 
 # WandB
 wandb:
   project: piflow
   entity: null
-  run_name: piflow_libero_plus_1nfe
-  tags: ["libero-plus", "1nfe", "piflow", "gmflow", "jax"]
+  run_name: piflow_calvin_1nfe
+  tags: ["calvin", "1nfe", "piflow", "gmflow", "jax"]
 
-# Data
-dataset_path: /root/autodl-tmp/datasets/libero-plus-training
+# Data（CALVIN LeRobot parquet，由 dmf/scripts/convert_calvin_data_to_lerobot.py 产出）
+dataset_path: /root/autodl-tmp/datasets/calvin_lerobot
 
-# Base checkpoint (teacher + student init)
-checkpoint: /root/autodl-tmp/checkpoints/pi05_libero
+# Base checkpoint（CALVIN 域 pi0.5，LoRA 合并后的非 LoRA checkpoint；teacher + student init）
+checkpoint: /root/autodl-tmp/checkpoints/pi05_calvin
 
 # Freeze: VLM backbone
 freeze:

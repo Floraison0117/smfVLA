@@ -14,7 +14,9 @@ def load_checkpoint_with_single_device_sharding(checkpointer, checkpoint_path):
         return checkpointer.restore(str(checkpoint_path))
     except ValueError as e:
         if "sharding" in str(e).lower() or "devices" in str(e).lower():
-            logger.info("Multi-device checkpoint detected, restoring with single-device sharding...")
+            logger.info(
+                "Multi-device checkpoint detected, restoring with single-device sharding..."
+            )
             import jax
             from jax.sharding import SingleDeviceSharding
             import orbax.checkpoint as ocp
@@ -48,6 +50,7 @@ def _detect_checkpoint_type(checkpoint_path: pathlib.Path) -> str:
     except ValueError as e:
         if "sharding" in str(e).lower():
             from jax.sharding import SingleDeviceSharding
+
             single_sharding = SingleDeviceSharding(jax.devices()[0])
             restore_args = jax.tree.map(
                 lambda _: ocp.ArrayRestoreArgs(sharding=single_sharding),
@@ -61,11 +64,54 @@ def _detect_checkpoint_type(checkpoint_path: pathlib.Path) -> str:
         params = params["model"]
 
     flat = traverse_util.flatten_dict(params)
+    # 检测顺序：snapflow (target_time_mlp) → smf (time_proj) → piflow (gmm_*) → dmf (logvar_proj)
+    # snapflow 的模型继承 Pi0（无 time_proj），smf 有 time_proj 但无 target_time_mlp，互斥。
+    if any("target_time_mlp" in "/".join(k) for k in flat.keys()):
+        return "snapflow"
+    if any("time_proj" in "/".join(k) for k in flat.keys()):
+        return "smf"
     if any("gmm_mean_proj" in "/".join(k) for k in flat.keys()):
         return "piflow"
     if any("logvar_proj" in "/".join(k) for k in flat.keys()):
         return "dmf"
     return "original"
+
+
+def _restore_model_params(checkpoint_path: pathlib.Path):
+    """Restore model params dict, auto-detecting the /params layout vs the
+    FreeFlow _METADATA (step-dir root) layout.
+
+    Returns the model-state pytree (i.e. the ``"model"`` sub-tree is unwrapped when
+    present, as FreeFlow saves ``{"model": state, "optimizer": ..., "step": ...}``).
+    """
+    import jax
+    import orbax.checkpoint as ocp
+
+    is_freeflow_format = (checkpoint_path / "_METADATA").exists()
+    load_path = str(checkpoint_path) if is_freeflow_format else str(checkpoint_path / "params")
+
+    checkpointer = ocp.PyTreeCheckpointer()
+    try:
+        params = checkpointer.restore(load_path)
+    except FileNotFoundError:
+        alt_path = str(checkpoint_path / "params") if is_freeflow_format else str(checkpoint_path)
+        params = checkpointer.restore(alt_path)
+    except ValueError as e:
+        if "sharding" in str(e).lower():
+            from jax.sharding import SingleDeviceSharding
+
+            single_sharding = SingleDeviceSharding(jax.devices()[0])
+            restore_args = jax.tree.map(
+                lambda _: ocp.ArrayRestoreArgs(sharding=single_sharding),
+                checkpointer.metadata(load_path),
+            )
+            params = checkpointer.restore(load_path, restore_args=restore_args)
+        else:
+            raise
+
+    if "model" in params:
+        params = params["model"]
+    return params
 
 
 def load_policy(nfe: int, checkpoint_dir: str, model_type: str):
@@ -74,7 +120,7 @@ def load_policy(nfe: int, checkpoint_dir: str, model_type: str):
     Args:
         nfe: 采样步数 (1, 2, 4, 10)
         checkpoint_dir: checkpoint 目录路径
-        model_type: "pi05"、"dmf" 或 "piflow"
+        model_type: "pi05"、"dmf"、"piflow"、"smf"、"snapflow" 或 "freeflow"
     """
     import jax
     from openpi.policies import policy_config as _policy_config
@@ -85,7 +131,233 @@ def load_policy(nfe: int, checkpoint_dir: str, model_type: str):
     ckpt_type = _detect_checkpoint_type(checkpoint_path)
     logger.info(f"Checkpoint type: {ckpt_type}, model_type={model_type}, NFE={nfe}")
 
-    if model_type == "piflow" or ckpt_type == "piflow":
+    if model_type == "smf" or ckpt_type == "smf":
+        logger.info(f"Loading Pi05SMF model for {nfe}-NFE inference...")
+        import flax.nnx as nnx
+        import flax.traverse_util as traverse_util
+        import orbax.checkpoint as ocp
+
+        try:
+            from smf_vla.models.pi05_smf import Pi05SMF, Pi05SMFConfig
+        except ImportError:
+            logger.error("smfVLA not available. Install smfVLA to use SMF checkpoints")
+            raise
+
+        smf_config = Pi05SMFConfig(
+            pi05=True,
+            action_horizon=train_config.model.action_horizon,
+            action_dim=train_config.model.action_dim,
+            discrete_state_input=False,
+            flow_ratio=0.3,
+        )
+
+        checkpointer = ocp.PyTreeCheckpointer()
+        params = load_checkpoint_with_single_device_sharding(
+            checkpointer, checkpoint_path / "params"
+        )
+
+        model = smf_config.create(jax.random.key(0))
+        graphdef, state = nnx.split(model)
+        pure_state = state.to_pure_dict()
+
+        flat_params = traverse_util.flatten_dict(params)
+        flat_state = traverse_util.flatten_dict(pure_state)
+
+        loaded_count = 0
+        for key in flat_state:
+            if key in flat_params:
+                flat_state[key] = flat_params[key]
+                loaded_count += 1
+            elif "time_proj" in "/".join(key):
+                logger.info(f"Skipping (keeping init): {'/'.join(key)}")
+            else:
+                logger.warning(f"Not in checkpoint: {'/'.join(key)}")
+
+        logger.info(f"Loaded {loaded_count} parameters")
+        pure_state = traverse_util.unflatten_dict(flat_state)
+        state.replace_by_pure_dict(pure_state)
+        model = nnx.merge(graphdef, state)
+
+        from openpi.policies import policy as _policy
+        from openpi import transforms as _transforms
+        from openpi.training import checkpoints as _checkpoints
+
+        data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+        base_ckpt = PROJECT_ROOT / "checkpoints" / "pi05_libero"
+        assets_dir = checkpoint_path / "assets"
+        if not assets_dir.exists():
+            assets_dir = base_ckpt / "assets"
+            logger.info(f"Using base checkpoint assets: {assets_dir}")
+        norm_stats = _checkpoints.load_norm_stats(assets_dir, data_config.asset_id)
+
+        policy = _policy.Policy(
+            model,
+            transforms=[
+                _transforms.InjectDefaultPrompt(None),
+                *data_config.data_transforms.inputs,
+                _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.model_transforms.inputs,
+            ],
+            output_transforms=[
+                *data_config.model_transforms.outputs,
+                _transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.data_transforms.outputs,
+            ],
+            sample_kwargs={"num_steps": nfe},
+        )
+        return policy
+    elif model_type == "snapflow" or ckpt_type == "snapflow":
+        logger.info(f"Loading Pi05SnapFlow model for {nfe}-NFE inference...")
+        import flax.nnx as nnx
+        import flax.traverse_util as traverse_util
+        import orbax.checkpoint as ocp
+
+        try:
+            from snapflow.models.pi05_snapflow import Pi05SnapFlow, Pi05SnapFlowConfig
+        except ImportError:
+            logger.error("snapflow not available. Install snapflow to use SnapFlow checkpoints")
+            raise
+
+        snap_config = Pi05SnapFlowConfig(
+            pi05=True,
+            action_horizon=train_config.model.action_horizon,
+            action_dim=train_config.model.action_dim,
+            discrete_state_input=False,
+            alpha=0.5,
+            lambda_consistency=0.1,
+            prediction_clamp_min=-20,
+            prediction_clamp_max=20,
+        )
+
+        checkpointer = ocp.PyTreeCheckpointer()
+        params = load_checkpoint_with_single_device_sharding(
+            checkpointer, checkpoint_path / "params"
+        )
+
+        model = snap_config.create(jax.random.key(0))
+        graphdef, state = nnx.split(model)
+        pure_state = state.to_pure_dict()
+
+        flat_params = traverse_util.flatten_dict(params)
+        flat_state = traverse_util.flatten_dict(pure_state)
+
+        loaded_count = 0
+        for key in flat_state:
+            str_key = "/".join(key)
+            if key in flat_params:
+                flat_state[key] = flat_params[key]
+                loaded_count += 1
+            elif "target_time_mlp" in str_key or "time_proj" in str_key:
+                logger.info(f"Skipping (keeping init): {str_key}")
+            else:
+                logger.warning(f"Not in checkpoint: {str_key}")
+
+        logger.info(f"Loaded {loaded_count} parameters")
+        pure_state = traverse_util.unflatten_dict(flat_state)
+        state.replace_by_pure_dict(pure_state)
+        model = nnx.merge(graphdef, state)
+
+        from openpi.policies import policy as _policy
+        from openpi import transforms as _transforms
+        from openpi.training import checkpoints as _checkpoints
+
+        data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+        base_ckpt = PROJECT_ROOT / "checkpoints" / "pi05_libero"
+        assets_dir = checkpoint_path / "assets"
+        if not assets_dir.exists():
+            assets_dir = base_ckpt / "assets"
+            logger.info(f"Using base checkpoint assets: {assets_dir}")
+        norm_stats = _checkpoints.load_norm_stats(assets_dir, data_config.asset_id)
+
+        policy = _policy.Policy(
+            model,
+            transforms=[
+                _transforms.InjectDefaultPrompt(None),
+                *data_config.data_transforms.inputs,
+                _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.model_transforms.inputs,
+            ],
+            output_transforms=[
+                *data_config.model_transforms.outputs,
+                _transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.data_transforms.outputs,
+            ],
+            sample_kwargs={"num_steps": nfe},
+        )
+        return policy
+    elif model_type == "freeflow":
+        logger.info(f"Loading Pi05FreeFlow model for {nfe}-NFE inference...")
+        import flax.nnx as nnx
+        import flax.traverse_util as traverse_util
+        from openpi.models import pi0_config
+
+        try:
+            from freeflow.models.pi05_freeflow import Pi05FreeFlow
+        except ImportError:
+            logger.error("freeflow not available. Install freeflow to use FreeFlow checkpoints")
+            raise
+
+        # FreeFlow 无新增参数头，结构与 π0.5 一致；checkpoint 以 _METADATA 布局保存
+        params = _restore_model_params(checkpoint_path)
+
+        ff_config = pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=train_config.model.action_horizon,
+            action_dim=train_config.model.action_dim,
+            discrete_state_input=False,
+        )
+        model = Pi05FreeFlow(ff_config, nnx.Rngs(0))
+        graphdef, state = nnx.split(model)
+        pure_state = state.to_pure_dict()
+
+        flat_params = traverse_util.flatten_dict(params)
+        flat_state = traverse_util.flatten_dict(pure_state)
+
+        loaded_count = 0
+        missing = 0
+        for key in flat_state:
+            if key in flat_params:
+                flat_state[key] = flat_params[key]
+                loaded_count += 1
+            else:
+                missing += 1
+                if missing <= 5:
+                    logger.warning(f"Not in checkpoint: {'/'.join(key)}")
+        logger.info(f"Loaded {loaded_count} parameters (missing {missing})")
+
+        pure_state = traverse_util.unflatten_dict(flat_state)
+        state.replace_by_pure_dict(pure_state)
+        model = nnx.merge(graphdef, state)
+
+        from openpi.policies import policy as _policy
+        from openpi import transforms as _transforms
+        from openpi.training import checkpoints as _checkpoints
+
+        data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+        base_ckpt = PROJECT_ROOT / "checkpoints" / "pi05_libero"
+        assets_dir = checkpoint_path / "assets"
+        if not assets_dir.exists():
+            assets_dir = base_ckpt / "assets"
+            logger.info(f"Using base checkpoint assets: {assets_dir}")
+        norm_stats = _checkpoints.load_norm_stats(assets_dir, data_config.asset_id)
+
+        policy = _policy.Policy(
+            model,
+            transforms=[
+                _transforms.InjectDefaultPrompt(None),
+                *data_config.data_transforms.inputs,
+                _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.model_transforms.inputs,
+            ],
+            output_transforms=[
+                *data_config.model_transforms.outputs,
+                _transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.data_transforms.outputs,
+            ],
+            sample_kwargs={"num_steps": nfe},
+        )
+        return policy
+    elif model_type == "piflow" or ckpt_type == "piflow":
         logger.info(f"Loading Pi05PiFlow model for {nfe}-NFE inference...")
         import flax.nnx as nnx
         import flax.traverse_util as traverse_util
@@ -123,7 +395,10 @@ def load_policy(nfe: int, checkpoint_dir: str, model_type: str):
             if key in flat_params:
                 flat_state[key] = flat_params[key]
                 loaded_count += 1
-            elif any(p in "/".join(key) for p in ("gmm_mean_proj", "gmm_logstd_proj", "gmm_logweight_proj")):
+            elif any(
+                p in "/".join(key)
+                for p in ("gmm_mean_proj", "gmm_logstd_proj", "gmm_logweight_proj")
+            ):
                 logger.info(f"Skipping (keeping init): {'/'.join(key)}")
             else:
                 logger.warning(f"Not in checkpoint: {'/'.join(key)}")
@@ -226,12 +501,12 @@ def load_policy(nfe: int, checkpoint_dir: str, model_type: str):
             transforms=[
                 _transforms.InjectDefaultPrompt(None),
                 *data_config.data_transforms.inputs,
-                _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                _transforms.Normalize(norm_stats, use_quantiles=False),
                 *data_config.model_transforms.inputs,
             ],
             output_transforms=[
                 *data_config.model_transforms.outputs,
-                _transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                _transforms.Unnormalize(norm_stats, use_quantiles=False),
                 *data_config.data_transforms.outputs,
             ],
             sample_kwargs={"num_steps": nfe},

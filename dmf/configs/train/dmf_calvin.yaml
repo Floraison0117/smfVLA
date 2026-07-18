@@ -1,6 +1,6 @@
 # DMF (Decoupled MeanFlow) training configuration for CALVIN
 # 数据：CALVIN D-D training subset → LeRobot parquet（见 scripts/convert_calvin_data_to_lerobot.py）
-# base checkpoint：pi05_calvin_corrected（CALVIN 域）
+# base checkpoint：pi05_calvin（CALVIN 域，LoRA 合并后的非 LoRA checkpoint）
 
 method: "dmf"
 
@@ -50,8 +50,8 @@ dataset_path: /root/autodl-tmp/datasets/calvin_lerobot
 action_dim_raw: 7       # CALVIN 原始 action 维
 target_action_dim: 32  # pad 到 pi0.5
 
-# Base checkpoint（CALVIN 域 pi0.5）
-checkpoint: /root/autodl-tmp/checkpoints/pi05_calvin_corrected
+# Base checkpoint（CALVIN 域 pi0.5，LoRA 合并后的非 LoRA checkpoint）
+checkpoint: /root/autodl-tmp/checkpoints/pi05_calvin
 
 # Parameter freezing（与 libero 一致：冻 VLM，训 action expert + time MLP + logvar）
 freeze:

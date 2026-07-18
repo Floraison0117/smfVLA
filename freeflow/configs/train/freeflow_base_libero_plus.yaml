@@ -1,11 +1,18 @@
-# FreeFlow config for LIBERO-Plus training (FIXED)
+# FreeFlow config for LIBERO-Plus training
 # Data-free distillation from π₀.₅ teacher (NFE=10) to 1-NFE student
+#
+# NOTE 修复点（相对旧 freeflow_base_libero_plus.yaml）：
+#   1. action_horizon: 1 -> 10（π0.5 base 训练于 10-step action chunk；1 是把 "1-NFE" 与
+#      "1 action step" 混淆的 bug，会导致 teacher/student 只生成单步动作、与 base checkpoint 不符）
+#   2. base_checkpoint: 指向共享 /root/autodl-tmp/checkpoints/pi05_libero（旧符号链接
+#      checkpoints/base/pi05_libero -> .../checkpoints/smf_base/pi05_libero 已失效）
+#   3. dataset_path / norm_stats: 改为绝对路径，避免依赖 freeflow/data 符号链接
 
 model:
   name: freeflow_base
   description: "Basic FreeFlow with error correction on LIBERO-Plus"
   action_dim: 32
-  action_horizon: 1
+  action_horizon: 10          # π0.5 action chunk length (NOT nfe)
   teacher_nfe: 10
   lambda_correction: 0.1
 
@@ -31,61 +38,50 @@ scheduler:
   warmup_steps: 500
 
 data:
-  # FIXED: Use libero-plus-training for robustness training
-  dataset_path: data/libero-plus-training
-  norm_stats: data/libero-plus-training/norm_stats.json
+  # LIBERO-Plus training set (LeRobot v2.1, mp4 视频)
+  dataset_path: /root/autodl-tmp/datasets/libero-plus-training
+  norm_stats: /root/autodl-tmp/datasets/libero-plus-training/norm_stats.json
   num_workers: 4
   prefetch_size: 2
 
-# FIXED: Use specific freeze patterns from freeze_utils.py
+# Freeze patterns (VLM backbone frozen; action expert _1 + projections trainable)
 freeze:
-  # Freeze VLM backbone (vision encoder)
   - "PaliGemma/img/**"
-  # Freeze token embedding
   - "PaliGemma/llm/embedder/**"
-  # Freeze VLM final norm (no _1 suffix)
   - "PaliGemma/llm/final_norm/scale"
-  # Freeze VLM attention (no _1 suffix)
   - "PaliGemma/llm/layers/attn/q_einsum/w"
   - "PaliGemma/llm/layers/attn/kv_einsum/w"
   - "PaliGemma/llm/layers/attn/attn_vec_einsum/w"
-  # Freeze VLM MLP (no _1 suffix)
   - "PaliGemma/llm/layers/mlp/gating_einsum"
   - "PaliGemma/llm/layers/mlp/linear"
-  # Freeze VLM norm (no _1 suffix)
   - "PaliGemma/llm/layers/pre_attention_norm/scale"
   - "PaliGemma/llm/layers/pre_ffw_norm/scale"
 
 trainable:
-  # Action expert attention (_1 suffix)
   - "PaliGemma/llm/layers/attn/q_einsum_1/**"
   - "PaliGemma/llm/layers/attn/kv_einsum_1/**"
   - "PaliGemma/llm/layers/attn/attn_vec_einsum_1/**"
-  # Action expert MLP (_1 suffix)
   - "PaliGemma/llm/layers/mlp_1/**"
-  # Action expert norm (_1 suffix)
   - "PaliGemma/llm/layers/pre_attention_norm_1/**"
   - "PaliGemma/llm/layers/pre_ffw_norm_1/**"
-  # Action expert final norm
   - "PaliGemma/llm/final_norm_1/**"
-  # Action projection
   - "action_in_proj/**"
   - "action_out_proj/**"
-  # Time MLP (time_proj not used in current implementation)
   - "time_mlp_in/**"
   - "time_mlp_out/**"
 
 checkpointing:
-  # FIXED: Use relative path (resolves via symlink)
-  base_checkpoint: checkpoints/base/pi05_libero
-  save_dir: checkpoints/finetuned/freeflow
+  # 共享 π0.5 base checkpoint（teacher + student 初始化）
+  base_checkpoint: /root/autodl-tmp/checkpoints/pi05_libero
+  # 保存到方法本地目录（与 AGENTS.md 一致：freeflow/checkpoints/finetuned/freeflow/step_N）
+  save_dir: /root/autodl-tmp/freeflow/checkpoints/finetuned/freeflow
   resume: null
 
 logging:
   project: freeflow
   entity: null
   mode: online
-  tags: ["libero-plus", "1nfe", "data-free"]
+  tags: ["libero-plus", "1nfe", "data-free", "jax"]
 
 evaluation:
   nfe: 1

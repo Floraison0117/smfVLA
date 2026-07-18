@@ -31,6 +31,8 @@ OPENPI_DIR="/root/autodl-tmp/openpi"
 # Ensure GPU is visible to JAX before Python starts
 export JAX_PLATFORMS=cuda
 export JAX_COMPILATION_CACHE_MAX_SIZE=134217728
+export XLA_FLAGS="--xla_gpu_autotune_level=0"
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.50
 
 export PYTHONPATH="${PROJECT_ROOT}/src:${OPENPI_DIR}/src:${OPENPI_DIR}/packages/openpi-client/src"
 

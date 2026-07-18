@@ -58,7 +58,12 @@ PRESETS = {
 
 def main():
     parser = argparse.ArgumentParser(description="CALVIN benchmark eval (pi0.5, any NFE)")
-    parser.add_argument("--model-type", type=str, default="pi05", choices=["pi05", "dmf", "piflow"])
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="pi05",
+        choices=["pi05", "dmf", "piflow", "smf", "snapflow", "freeflow"],
+    )
     parser.add_argument("--nfe", type=int, default=1, choices=[1, 2, 4, 10])
     parser.add_argument("--mode", type=str, default="quick", choices=["quick", "normal", "fullset"])
     parser.add_argument("--checkpoint", type=str, default=None)
@@ -72,19 +77,24 @@ def main():
 
     if args.checkpoint is None:
         if args.model_type == "pi05":
-            args.checkpoint = "/root/autodl-tmp/checkpoints/pi05_calvin_jax"
-        elif args.model_type == "dmf":
-            dmf_dir = pathlib.Path("/root/autodl-tmp/checkpoints/dmf_finetuned")
-            steps = sorted(dmf_dir.glob("step_*")) if dmf_dir.exists() else []
-            if steps:
-                args.checkpoint = str(steps[-1])
-            else:
-                args.checkpoint = "/root/autodl-tmp/checkpoints/pi05_libero"
-        elif args.model_type == "piflow":
-            piflow_dir = pathlib.Path("/root/autodl-tmp/checkpoints/piflow_finetuned")
-            steps = sorted(piflow_dir.glob("step_*")) if piflow_dir.exists() else []
-            if steps:
-                args.checkpoint = str(steps[-1])
+            args.checkpoint = "/root/autodl-tmp/checkpoints/pi05_calvin"
+        else:
+            # 各方法 finetuned checkpoint（找不到则回退到 pi05_libero base）
+            _finetuned_dirs = {
+                "dmf": pathlib.Path("/root/autodl-tmp/checkpoints/dmf_finetuned"),
+                "piflow": pathlib.Path("/root/autodl-tmp/checkpoints/piflow_finetuned"),
+                "smf": pathlib.Path("/root/autodl-tmp/checkpoints/smf_finetuned"),
+                "snapflow": pathlib.Path("/root/autodl-tmp/checkpoints/snapflow_finetuned"),
+                "freeflow": pathlib.Path(
+                    "/root/autodl-tmp/freeflow/checkpoints/finetuned/freeflow"
+                ),
+            }
+            finetuned_dir = _finetuned_dirs.get(args.model_type)
+            if finetuned_dir is not None:
+                steps = sorted(finetuned_dir.glob("step_*")) if finetuned_dir.exists() else []
+                args.checkpoint = (
+                    str(steps[-1]) if steps else "/root/autodl-tmp/checkpoints/pi05_libero"
+                )
             else:
                 args.checkpoint = "/root/autodl-tmp/checkpoints/pi05_libero"
 

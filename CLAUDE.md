@@ -64,9 +64,10 @@ cd /root/autodl-tmp && python -m eval.calvin.main --model-type piflow --nfe 1 --
 - `eval/libero_plus/` — LIBERO-Plus evaluation. `main.py` is the entry point. Modes:
   `quick` (1 suite, spatial, 10 tasks, 5 ep), `normal` (4 suites, perturbation sampling,
   5 ep, <10h), `fullset` (5 suites, all tasks, 50 ep).
-- `eval/calvin/` — CALVIN ABCD→D official benchmark (JAX, supports pi05/dmf/piflow).
-  Modes: `quick` (debug dataset, 5 seqs), `normal` (ABCD, 100 seqs), `fullset` (ABCD,
-  1000 seqs). Default pi05 checkpoint: `checkpoints/pi05_calvin_jax`.
+- `eval/calvin/` — CALVIN ABCD→D official benchmark (JAX, supports
+  pi05/dmf/piflow/smf/snapflow/freeflow). Modes: `quick` (debug dataset, 5 seqs),
+  `normal` (ABCD, 100 seqs), `fullset` (ABCD, 1000 seqs). Default pi05 checkpoint:
+  `checkpoints/pi05_calvin` (the merged non-LoRA CALVIN pi0.5).
 - Model types: `pi05` (original), `dmf`, and `piflow`. NFE = `num_steps`;
   supports 1/2/4/10. All three are supported by both LIBERO-Plus and CALVIN.
 - `detect_checkpoint_type()` auto-sniffs: `gmm_mean_proj`→piflow,

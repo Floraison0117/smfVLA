@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """SMF 训练入口脚本。"""
+
 import sys
 import os
 
 # 设置路径
-project_root = os.environ.get("PROJECT_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.environ.get(
+    "PROJECT_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 openpi_dir = os.path.join(project_root, "third_party", "openpi")
 sys.path.insert(0, os.path.join(project_root, "src"))
 sys.path.insert(0, os.path.join(openpi_dir, "src"))
@@ -12,12 +15,19 @@ sys.path.insert(0, os.path.join(openpi_dir, "src"))
 import yaml
 import logging
 
-# ── JAX 内存限制配置 ─────────────────────────────────────────────────
-# 限制 JAX 编译缓存大小，防止 RAM 占用过高
-os.environ['JAX_COMPILATION_CACHE_MAX_SIZE'] = '134217728'  # 128MB
+# ── JAX 环境变量（必须在 import jax 之前设置）─────────────────────
+# 强制使用 GPU
+os.environ["JAX_PLATFORMS"] = "cuda"
+os.environ["JAX_COMPILATION_CACHE_MAX_SIZE"] = "134217728"  # 128MB
+# 关闭 XLA GEMM autotune，避免显存尖峰（默认 autotune_level=4；level=0 省约 80% 峰值显存，代价 +10% 时间）
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=0"
+# 提高显存占用比例（默认 0.75 太小，JVP 穿过 3B 模型在 bs=32 时会 OOM）
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.90"
 
 import jax
-jax.config.update('jax_compilation_cache_max_size', 128 * 1024 * 1024)
+
+jax.config.update("jax_platforms", "cuda")
+jax.config.update("jax_compilation_cache_max_size", 128 * 1024 * 1024)
 
 import flax.nnx as nnx
 from pathlib import Path
@@ -28,10 +38,15 @@ logger = logging.getLogger(__name__)
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("config", default="configs/train/smf_base_libero.yaml", nargs="?")
-    parser.add_argument("--resume", type=str, default=None,
-                        help="从 checkpoint 恢复训练（路径如 checkpoints/finetuned/smf_base/step_5000）")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="从 checkpoint 恢复训练（路径如 checkpoints/finetuned/smf_base/step_5000）",
+    )
     args = parser.parse_args()
 
     # 加载配置
@@ -55,9 +70,6 @@ def main():
     import jax.numpy as jnp
 
     ckpt_dir = Path(config["checkpoint"])
-    logger.info(f"加载参数: {ckpt_dir / 'params'}...")
-    params = restore_params(ckpt_dir / "params", dtype=jnp.bfloat16)
-    logger.info(f"参数数量: {sum(x.size for x in jax.tree.leaves(params)):,}")
 
     # 创建模型
     model = smf_config.create(jax.random.key(0))
@@ -66,26 +78,48 @@ def main():
 
     import flax.traverse_util as traverse_util
 
-    flat_params = traverse_util.flatten_dict(params)
-    flat_state = traverse_util.flatten_dict(pure_state)
+    if args.resume:
+        # Resume: skip base checkpoint load, trainer will restore from --resume path
+        logger.info(f"将从 {args.resume} 恢复训练（跳过 base checkpoint 加载）")
+    else:
+        logger.info(f"加载参数: {ckpt_dir / 'params'}...")
+        params = restore_params(ckpt_dir / "params", dtype=jnp.bfloat16)
+        logger.info(f"参数数量: {sum(x.size for x in jax.tree.leaves(params)):,}")
 
-    loaded_count = 0
-    for key in flat_state:
-        str_key = "/".join(key)
-        if key in flat_params:
-            flat_state[key] = flat_params[key]
-            loaded_count += 1
-        elif "time_proj" in str_key:
-            logger.info(f"跳过新增参数: {str_key}")
-        else:
-            logger.warning(f"未找到: {str_key}")
+        flat_params = traverse_util.flatten_dict(params)
+        flat_state = traverse_util.flatten_dict(pure_state)
 
-    logger.info(f"加载了 {loaded_count} 个参数")
+        loaded_count = 0
+        skipped_new = 0
+        missing = 0
+        for key in flat_state:
+            str_key = "/".join(key)
+            if key in flat_params:
+                flat_state[key] = flat_params.pop(key)
+                loaded_count += 1
+            elif "time_proj" in str_key:
+                # SMF 新增参数 — 保留随机初始化（time_proj 初始化为 [I, 0]）
+                skipped_new += 1
+            else:
+                missing += 1
+                if missing <= 5:
+                    logger.warning(f"未在 base checkpoint 中找到: {str_key}")
+        if missing > 5:
+            logger.warning(f"... 还有 {missing - 5} 个参数未找到")
 
-    pure_state = traverse_util.unflatten_dict(flat_state)
-    state.replace_by_pure_dict(pure_state)
-    model = nnx.merge(graphdef, state)
-    logger.info("模型加载完成")
+        unused = len(flat_params)
+        if unused > 0:
+            logger.info(f"跳过 {unused} 个未使用的 checkpoint 键")
+
+        logger.info(
+            f"参数合并: {loaded_count} loaded, {skipped_new} SMF-new (kept init), "
+            f"{missing} missing, {unused} unused"
+        )
+
+        pure_state = traverse_util.unflatten_dict(flat_state)
+        state.replace_by_pure_dict(pure_state)
+        model = nnx.merge(graphdef, state)
+        logger.info("模型加载完成")
 
     # ── 加载 Teacher 模型（用于 Anchor / BPL）──────────────────
     teacher_model = None

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """SnapFlow training entry script."""
+
 import sys
 import os
 
 # Set up paths
-project_root = os.environ.get("PROJECT_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.environ.get(
+    "PROJECT_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 openpi_dir = os.path.join(project_root, "third_party", "openpi")
 sys.path.insert(0, os.path.join(project_root, "src"))
 sys.path.insert(0, os.path.join(openpi_dir, "src"))
@@ -12,15 +15,19 @@ sys.path.insert(0, os.path.join(openpi_dir, "src"))
 import argparse
 import logging
 
-# ── JAX 内存限制配置 ─────────────────────────────────────────────────
-# 限制 JAX 编译缓存大小，防止 RAM 占用过高
-import os
-# 限制编译缓存为 128MB（默认可能是无限）
-os.environ['JAX_COMPILATION_CACHE_MAX_SIZE'] = '134217728'  # 128MB in bytes
+# ── JAX 环境变量（必须在 import jax 之前设置）─────────────────────
+# 强制使用 GPU
+os.environ["JAX_PLATFORMS"] = "cuda"
+os.environ["JAX_COMPILATION_CACHE_MAX_SIZE"] = "134217728"  # 128MB
+# 关闭 XLA GEMM autotune，避免显存尖峰（省约 80% 峰值显存，代价 +10% 时间）
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=0"
+# 提高显存占用比例（默认 0.75 太小，bs 较大时 JVP 会 OOM）
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.90"
 
 import jax
-# 限制编译缓存大小
-jax.config.update('jax_compilation_cache_max_size', 128 * 1024 * 1024)
+
+jax.config.update("jax_platforms", "cuda")
+jax.config.update("jax_compilation_cache_max_size", 128 * 1024 * 1024)
 
 import flax.nnx as nnx
 from pathlib import Path
@@ -31,17 +38,24 @@ logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("config", default="configs/train/snapflow_libero.yaml", nargs="?")
-    parser.add_argument("--resume", type=str, default=None,
-                        help="Resume from checkpoint (e.g., checkpoints/finetuned/snapflow/step_10000)")
+    parser.add_argument("config", default="configs/train/snapflow_libero_plus.yaml", nargs="?")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Resume from checkpoint (e.g., checkpoints/finetuned/snapflow/step_10000)",
+    )
     args = parser.parse_args()
 
     # Load config
     import yaml
+
     with open(args.config) as f:
         config = yaml.safe_load(f)
     logger.info(f"Config: {config['method']}, steps={config['training_steps']}")
-    logger.info(f"Alpha: {config.get('alpha', 0.5)}, Lambda: {config.get('lambda_consistency', 0.1)}")
+    logger.info(
+        f"Alpha: {config.get('alpha', 0.5)}, Lambda: {config.get('lambda_consistency', 0.1)}"
+    )
 
     # Load model
     from snapflow.models.pi05_snapflow import Pi05SnapFlow, Pi05SnapFlowConfig
@@ -62,9 +76,6 @@ def main():
     import jax.numpy as jnp
 
     ckpt_dir = Path(config["checkpoint"])
-    logger.info(f"Loading params from {ckpt_dir / 'params'}...")
-    params = restore_params(ckpt_dir / "params", dtype=jnp.bfloat16)
-    logger.info(f"Loaded {sum(x.size for x in jax.tree.leaves(params)):,} parameters")
 
     # Create model
     model = snapflow_config.create(jax.random.key(0))
@@ -73,30 +84,53 @@ def main():
 
     import flax.traverse_util as traverse_util
 
-    flat_params = traverse_util.flatten_dict(params)
-    flat_state = traverse_util.flatten_dict(pure_state)
+    if args.resume:
+        # Resume: skip base checkpoint load, trainer will restore from --resume path
+        logger.info(f"Will resume from {args.resume} (skipping base checkpoint load)")
+    else:
+        logger.info(f"Loading params from {ckpt_dir / 'params'}...")
+        params = restore_params(ckpt_dir / "params", dtype=jnp.bfloat16)
+        logger.info(f"Loaded {sum(x.size for x in jax.tree.leaves(params)):,} parameters")
 
-    loaded_count = 0
-    for key in flat_state:
-        str_key = "/".join(key)
-        if key in flat_params:
-            flat_state[key] = flat_params[key]
-            loaded_count += 1
-        elif "time_proj" in str_key or "target_time_mlp" in str_key:
-            logger.info(f"Skipping new parameter: {str_key}")
-        else:
-            logger.warning(f"Parameter not found: {str_key}")
+        flat_params = traverse_util.flatten_dict(params)
+        flat_state = traverse_util.flatten_dict(pure_state)
 
-    logger.info(f"Loaded {loaded_count} parameters")
+        loaded_count = 0
+        skipped_new = 0
+        missing = 0
+        for key in flat_state:
+            str_key = "/".join(key)
+            if key in flat_params:
+                flat_state[key] = flat_params.pop(key)
+                loaded_count += 1
+            elif "target_time_mlp" in str_key or "time_proj" in str_key:
+                # SnapFlow 新增参数 — target_time_mlp 零初始化；time_proj 列在 trainable 但本方法不使用
+                skipped_new += 1
+            else:
+                missing += 1
+                if missing <= 5:
+                    logger.warning(f"Parameter not found in checkpoint: {str_key}")
+        if missing > 5:
+            logger.warning(f"... and {missing - 5} more missing parameters")
 
-    pure_state = traverse_util.unflatten_dict(flat_state)
-    state.replace_by_pure_dict(pure_state)
-    model = nnx.merge(graphdef, state)
-    logger.info("Model loaded successfully")
+        unused = len(flat_params)
+        if unused > 0:
+            logger.info(f"Skipped {unused} unused checkpoint keys")
+
+        logger.info(
+            f"Parameter merge: {loaded_count} loaded, {skipped_new} SnapFlow-new (kept init), "
+            f"{missing} missing, {unused} unused"
+        )
+
+        pure_state = traverse_util.unflatten_dict(flat_state)
+        state.replace_by_pure_dict(pure_state)
+        model = nnx.merge(graphdef, state)
+        logger.info("Model loaded successfully")
 
     # Verify target_time_mlp exists and outputs zeros
     logger.info("Checking target_time_mlp initialization...")
     import jax.numpy as jnp
+
     test_input = jnp.ones((1,))
     test_output = model.target_time_mlp(test_input)
     logger.info(f"target_time_mlp output shape: {test_output.shape}")

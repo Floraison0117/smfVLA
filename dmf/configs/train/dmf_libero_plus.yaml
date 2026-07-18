@@ -14,7 +14,10 @@ discrete_state_input: false
 dmf_depth_ratio: 0.67  # Encoder depth as ratio of total action expert layers (2/3)
 use_logvar: true  # Enable learned variance weighting
 
-# Time sampling distributions (logit-normal, sigmoid(N); PyTorch DMFLoss defaults)
+# Time sampling: "uniform" (t~U(0,1), r~U(0,t); covers full [0,1] for 1-NFE) or "logit_normal" (original)
+time_sampling: "uniform"
+
+# Time sampling distributions (used only when time_sampling: "logit_normal")
 P_mean: 0.0    # Mean for FM time distribution
 P_std: 1.0     # Std for FM time distribution
 P_mean_t: 0.4   # Mean for MF current time distribution (encoder cond)
@@ -36,7 +39,7 @@ precision: "bfloat16"
 
 # Checkpointing
 checkpoint_dir: /root/autodl-tmp/checkpoints/dmf_finetuned
-save_every: 5000
+save_every: 10000
 log_every: 100
 
 # WandB logging

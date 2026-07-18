@@ -8,8 +8,15 @@ Training setup:
 
 import argparse
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
+
+# ── JAX 环境变量（必须在 import jax / flax.nnx 之前设置）─────────────
+os.environ.setdefault("JAX_PLATFORMS", "cuda")
+os.environ.setdefault("JAX_COMPILATION_CACHE_MAX_SIZE", "134217728")  # 128MB
+os.environ.setdefault("XLA_FLAGS", "--xla_gpu_autotune_level=0")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 
 import flax.nnx as nnx
 import jax
@@ -24,8 +31,7 @@ from freeflow.training.freeze_utils import get_freeze_patterns, FREEZE_PATTERNS,
 from freeflow.training.teacher_integration import set_teacher
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -66,6 +72,7 @@ def load_pi05_teacher(config: FreeFlowConfig):
     pure_state = state.to_pure_dict()
 
     import flax.traverse_util as traverse_util
+
     flat_params = traverse_util.flatten_dict(params)
     flat_state = traverse_util.flatten_dict(pure_state)
 
@@ -116,6 +123,7 @@ def load_freeflow_student(config: FreeFlowConfig, teacher_params):
     pure_state = state.to_pure_dict()
 
     import flax.traverse_util as traverse_util
+
     flat_teacher_params = traverse_util.flatten_dict(teacher_params)
     flat_state = traverse_util.flatten_dict(pure_state)
 
@@ -235,7 +243,9 @@ def main():
 
     # Start training
     logger.info("Starting training loop...")
-    logger.info(f"Training config: batch_size={config.training.batch_size}, total_steps={config.training.total_steps}")
+    logger.info(
+        f"Training config: batch_size={config.training.batch_size}, total_steps={config.training.total_steps}"
+    )
     trainer.train(data_loader, start_step=start_step, resume_state=resume_state)
 
     logger.info("Training complete!")

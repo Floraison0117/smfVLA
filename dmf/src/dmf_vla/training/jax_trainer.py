@@ -150,6 +150,7 @@ class DMFTrainer:
         self.P_std = self.train_config.get("P_std", 1.0)
         self.P_std_t = self.train_config.get("P_std_t", 1.0)
         self.P_std_r = self.train_config.get("P_std_r", 1.0)
+        self.time_sampling = self.train_config.get("time_sampling", "uniform")
         self.ema_decay = self.train_config.get("ema_decay", 0.9999)
 
         # Freeze/trainable patterns from config
@@ -272,6 +273,7 @@ class DMFTrainer:
                 p_std=trainer.P_std, p_std_t=trainer.P_std_t,
                 p_std_r=trainer.P_std_r,
                 use_logvar=trainer.use_logvar,
+                time_sampling=trainer.time_sampling,
             )
 
         self._grad_fn = jax.jit(jax.value_and_grad(grad_fn, has_aux=True))
@@ -340,6 +342,7 @@ class DMFTrainer:
         logger.info(f"  DMF depth ratio: {self.dmf_depth_ratio}")
         logger.info(f"  EMA decay: {self.ema_decay}")
         logger.info(f"  P_mean: {self.P_mean}, P_mean_t: {self.P_mean_t}, P_mean_r: {self.P_mean_r}")
+        logger.info(f"  Time sampling: {self.time_sampling}")
         logger.info(f"  JAX backend: {jax.default_backend()}, devices: {jax.devices('gpu')}")
 
         # Prefetch iterator (prepares batches + async H2D in background thread)

@@ -21,6 +21,7 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 from eval.common import setup_paths
+
 setup_paths()
 
 from eval.common.policy_loader import load_policy
@@ -38,7 +39,12 @@ logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description="LIBERO-Plus evaluation")
-    parser.add_argument("--model-type", type=str, default="pi05", choices=["pi05", "dmf", "piflow"])
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="pi05",
+        choices=["pi05", "dmf", "piflow", "smf", "snapflow", "freeflow"],
+    )
     parser.add_argument("--nfe", type=int, nargs="+", default=[1], choices=[1, 2, 4, 10])
     parser.add_argument("--mode", type=str, default="quick", choices=["quick", "normal", "fullset"])
     parser.add_argument("--checkpoint", type=str, default=None)
@@ -48,8 +54,11 @@ def main():
     parser.add_argument("--results-dir", type=str, default=None)
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--worker-id", type=int, default=0)
-    parser.add_argument("--merge-results", action="store_true",
-                        help="Merge worker result files instead of running eval")
+    parser.add_argument(
+        "--merge-results",
+        action="store_true",
+        help="Merge worker result files instead of running eval",
+    )
     args = parser.parse_args()
 
     if args.worker_id >= args.num_workers:
@@ -58,6 +67,7 @@ def main():
     # Merge mode: combine existing worker result files and exit
     if args.merge_results:
         from eval.libero_plus.runner import merge_worker_results
+
         if args.results_dir is None:
             args.results_dir = str(PROJECT_ROOT / "results" / "libero_plus")
         merge_worker_results(
@@ -74,16 +84,17 @@ def main():
 
     # 默认 checkpoint
     if args.checkpoint is None:
-        if args.model_type == "dmf":
-            dmf_dir = PROJECT_ROOT / "checkpoints" / "dmf_finetuned"
-            steps = sorted(dmf_dir.glob("step_*")) if dmf_dir.exists() else []
-            if steps:
-                args.checkpoint = str(steps[-1])
-            else:
-                args.checkpoint = str(PROJECT_ROOT / "checkpoints" / "pi05_libero")
-        elif args.model_type == "piflow":
-            pf_dir = PROJECT_ROOT / "checkpoints" / "piflow_finetuned"
-            steps = sorted(pf_dir.glob("step_*")) if pf_dir.exists() else []
+        # 各方法的 finetuned checkpoint 目录（找不到则回退到 pi05_libero base）
+        _finetuned_dirs = {
+            "dmf": PROJECT_ROOT / "checkpoints" / "dmf_finetuned",
+            "piflow": PROJECT_ROOT / "checkpoints" / "piflow_finetuned",
+            "smf": PROJECT_ROOT / "checkpoints" / "smf_finetuned",
+            "snapflow": PROJECT_ROOT / "checkpoints" / "snapflow_finetuned",
+            "freeflow": PROJECT_ROOT / "freeflow" / "checkpoints" / "finetuned" / "freeflow",
+        }
+        finetuned_dir = _finetuned_dirs.get(args.model_type)
+        if finetuned_dir is not None:
+            steps = sorted(finetuned_dir.glob("step_*")) if finetuned_dir.exists() else []
             if steps:
                 args.checkpoint = str(steps[-1])
             else:
@@ -125,12 +136,19 @@ def main():
             logger.info(f"\n{'='*60}\nRunning: suite={suite_name}, nfe={nfe}\n{'='*60}")
             sampled = sampled_task_names_map.get(suite_name) if use_sampling else None
             result, filepath = run_eval_suite(
-                nfe=nfe, suite_name=suite_name, policy=policy,
-                seed=args.seed, max_tasks=max_tasks, task_offset=0,
-                replan_steps=args.replan_steps, num_steps_wait=args.num_steps_wait,
-                checkpoint=args.checkpoint, num_episodes=num_episodes,
+                nfe=nfe,
+                suite_name=suite_name,
+                policy=policy,
+                seed=args.seed,
+                max_tasks=max_tasks,
+                task_offset=0,
+                replan_steps=args.replan_steps,
+                num_steps_wait=args.num_steps_wait,
+                checkpoint=args.checkpoint,
+                num_episodes=num_episodes,
                 sampled_task_names=sampled,
-                num_workers=args.num_workers, worker_id=args.worker_id,
+                num_workers=args.num_workers,
+                worker_id=args.worker_id,
             )
             if result is not None:
                 all_results.append(result)
@@ -155,7 +173,8 @@ def main():
             },
         }
         combined["grand_total_rate"] = round(
-            combined["grand_total_successes"] / max(combined["grand_total_episodes"], 1), 4,
+            combined["grand_total_successes"] / max(combined["grand_total_episodes"], 1),
+            4,
         )
         for r in all_results:
             key = f"{r['config']['task_suite']}_nfe{r['config']['nfe']}"

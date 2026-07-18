@@ -12,9 +12,11 @@ export PROJECT_ROOT="${PROJECT_ROOT}"
 # Set PYTHONPATH
 export PYTHONPATH="${PROJECT_ROOT}/src:${PROJECT_ROOT}/third_party/openpi/src:${PROJECT_ROOT}/third_party/openpi/packages/openpi-client/src"
 
-# ── JAX 内存优化 ─────────────────────────────────────────────────
-# 限制 JAX 编译缓存大小，防止 RAM 占用过高
-# snapflow/run_train.py 中已设置 jax_compilation_cache_max_size
+# ── JAX 关键环境变量（必须在 python 启动 / import jax 前设置）──────────
+export JAX_PLATFORMS=cuda
+export JAX_COMPILATION_CACHE_MAX_SIZE=134217728
+export XLA_FLAGS="--xla_gpu_autotune_level=0"
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.90
 
 # Change to project root
 cd "${PROJECT_ROOT}"

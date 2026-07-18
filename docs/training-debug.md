@@ -10,6 +10,9 @@
 - **上 GPU 时用 fake-data**（去掉磁盘 IO 干扰），一次 run 同时验证 JIT/显存/NaN/grad。
 - **关键 env 必须在 `import jax` 前设置**——这是最常见的 OOM 根因。
 - **freeze 正确性看启动日志的参数计数**，不靠猜。
+- **训练必须在 tmux（或 screen）中运行**——SSH 断连会向子进程发 SIGHUP/SIGKILL，
+  训练无 traceback 中断、无 checkpoint 保存。裸跑 `bash scripts/train.sh` 在长训练
+  （30k steps ≈ 11h）中**必定**因断连而失败。详见 §9。
 
 ---
 
@@ -444,3 +447,89 @@ parquet_to_episode = {...}      # ← 从已过滤的 frame_entries 构建
 3. **方法间代码复用时要同步 bugfix**。Pi-Flow 的 `data_loader.py` 是从 DMF 复制
    的早期版本，DMF 后来修复了视频过滤 bug 但没有同步到 Pi-Flow。`diff` 两个方法
    的 `data_loader.py` 是快速发现此类遗漏的方法。
+
+---
+
+## 9. State 归一化不匹配 — Teacher 收到 raw state (2026-07-17)
+
+### 症状
+
+Pi-Flow 在 libero-plus-training 上微调 30k steps（`checkpoints/piflow_finetuned/step_0030000`）后，
+1-NFE eval **成功率 = 0%**（quick 模式 0/50，对照 pi05 base = 100%）。无 NaN/Inf/error，
+延时正常（~65-70ms/infer），loss 也正常下降（12.1→5.5）。详见
+`docs/experiments/20260717_piflow_libero_plus_30k_normal.md`。
+
+### 根因
+
+Pi-Flow 采用 **teacher-student 蒸馏**（`jax_trainer.py:288-340`）：teacher 是冻结的 pi0.5，
+student 是带 GMM head 的 Pi05PiFlow。Teacher 的 velocity 监督完全决定 student 学到什么。
+
+pi0.5 base（teacher）是用 openpi pipeline 训练的，其中
+`use_quantile_norm = model_type != PI0` → 对 pi0.5 为 **True**
+（`openpi/src/openpi/training/config.py:187`）。即 teacher 训练时，**state 和 actions 都经过
+quantile 归一化**映射到 `[-1, 1]`：
+
+```
+x_norm = (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+```
+
+而 Pi-Flow 的 `data_loader.py` 产出的是 **raw state**（`data_loader.py:369` 原代码）——
+没有对 state 做任何归一化（只加载了 action 的 mean/std 供 batch 携带，但 trainer 的
+`jit_batch` 只取 `observation`/`actions`，action_mean/action_std 实际未参与 loss）。
+
+后果链：
+1. Teacher `embed_suffix` 收到 raw state（量级远超 [-1,1]，如关节角 ~3.0）→ 分布外输入
+2. Teacher 的 velocity 预测错误（不再是它在 pi0.5 训练时学到的正确流场）
+3. Student GMM 匹配 teacher 的错误 velocity → 学到垃圾动作分布
+4. Eval 时输出动作全错，所有 episode 在 max_steps 后 FAILURE
+
+### 为什么 loss 仍"正常"下降
+
+Loss 衡量的是 student 与 **(错误的) teacher** 的一致性，不是与 ground truth 的一致性。
+Student 忠实拟合了 teacher 的错误流场 → loss 下降，但学到的策略无效。这是蒸馏类方法
+的典型陷阱：**teacher 的输入分布必须与 teacher 训练时一致，否则 loss 下降 ≠ 策略正确**。
+
+### 排除的因素
+
+- **时间采样**：Pi-Flow 用确定性均匀分段（`piflow_loss.py:74-76`），训练 nfe=1 时单段
+  t_src=1.0→t_dst=0.0，与 1-NFE 推理时间表完全一致，不存在 DMF 的大间隔外推问题。
+- **action 归一化**：loss 中 `actions` 仅用于 shape（`piflow_loss.py:41`），rollout 起点
+  是噪声 `x ~ N(0,I)`，GT actions 不参与监督；`use_quantiles` 设 True/False 都 0%。
+- **norm_stats 来源**：base checkpoint 与训练数据集的 stats 都试过，均 0% —— 因为问题在
+  state 根本没被归一化，而非 stats 数值不对。
+- **数值稳定性**：无 NaN/Inf。
+
+### 修复
+
+在 `piflow/src/piflow_vla/training/data_loader.py` 中对 state 应用 quantile 归一化，
+使用 **base checkpoint 的 norm_stats**（`checkpoints/pi05_libero/assets/.../norm_stats.json`，
+8-dim state stats）而非数据集自带的（libero-plus-training 的 `norm_stats.json` state 仅 4-dim，
+不完整）：
+
+1. `create_data_loader` 新增 `norm_stats_path` 参数；优先从此加载 state 的 `q01`/`q99`。
+2. 装配 batch 时对 state 做 `(state - q01) / (q99 - q01 + 1e-6) * 2 - 1`（与
+   `openpi/transforms.py:141-145` 完全一致）。
+3. `scripts/run_train.py` 用 `Path(config["checkpoint"]).rglob("norm_stats.json")`
+   定位 checkpoint 的 norm_stats 并传入。
+
+Eval 侧 `eval/common/policy_loader.py:428/433` 已用
+`use_quantiles=data_config.use_quantile_norm`（对 pi0.5 为 True），与训练归一化空间一致，
+无需改动。
+
+⚠️ **修改后必须重新训练**（现有 30k checkpoint 是用 raw state 训出的废权重）。
+
+### 通用教训（适用于所有方法）
+
+1. **蒸馏 / teacher-student 架构**：teacher 的输入预处理 pipeline 必须与 teacher 原训练时
+   **逐字节一致**。任何遗漏的归一化（state、image scale、prompt tokenize）都会让 teacher
+   产出错误监督，而 loss 仍会"正常"下降 —— 这是最隐蔽的失败模式。
+2. **openpi 的归一化约定**：pi0.5（`ModelType.PI05`）一律用 **quantile 归一化**（state + actions
+   → [-1,1]）；只有原始 `ModelType.PI0` 用 z-score。加载 pi0.5 base 做任何下游训练/推理时，
+   输入 state 必须先 quantile 归一化。检查方法：看
+   `openpi/src/openpi/training/config.py:187` 的 `use_quantile_norm` 取值。
+3. **norm_stats 来源要对**：数据集自带的 `norm_stats.json` 可能维度不全（如本例 4-dim vs
+   实际 8-dim state）；应使用 **base checkpoint assets** 里的 norm_stats，因为那才是 teacher
+   训练时实际用的统计量。
+4. **DMF 也可能受影响**：DMF 不用 teacher，但其模型同样基于 pi0.5 backbone，训练用 raw state、
+   eval 用 normalized state，可能存在同类 mismatch（DMF 的主要问题是时间采样，但 state 归一化
+   是独立的潜在问题，需单独验证）。

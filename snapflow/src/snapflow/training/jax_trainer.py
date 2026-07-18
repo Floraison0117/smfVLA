@@ -189,6 +189,10 @@ class SnapFlowTrainer:
 
             # ── 预计算 prefix KV cache (优化: 只计算一次，4次前向共享) ──
             prefix_tokens, prefix_mask, prefix_ar_mask = model.embed_prefix(observation)
+            # stop_gradient: prefix 来自 frozen VLM，切断 JVP 对 VLM 的回溯（见 docs §2/§7）
+            prefix_tokens = jax.lax.stop_gradient(prefix_tokens)
+            prefix_mask = jax.lax.stop_gradient(prefix_mask)
+            prefix_ar_mask = jax.lax.stop_gradient(prefix_ar_mask)
             prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
             prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
 
@@ -214,7 +218,11 @@ class SnapFlowTrainer:
                 # Suffix-only forward pass (使用 kv_cache 跳过 prefix 重复计算)
                 suffix_len = suffix_mask.shape[1]
                 suffix_causal_mask = make_attn_mask(suffix_mask, suffix_ar_mask)  # (batch, suffix_len, suffix_len)
-                suffix_positions = jnp.cumsum(suffix_mask, axis=1) - 1
+                # suffix 的全局位置必须接在 prefix 之后（与 sample_actions 一致），
+                # 否则 RoPE 位置与推理不一致 → train/infer mismatch。见 openpi pi0.py:259。
+                suffix_positions = (
+                    jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=1) - 1
+                )
 
                 # 构建完整的 attention mask: suffix tokens 可以 attend 到 prefix + suffix
                 # 前缀部分: suffix tokens 可以 attend 到所有 prefix tokens

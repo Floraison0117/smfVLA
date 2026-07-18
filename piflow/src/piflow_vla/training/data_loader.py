@@ -175,6 +175,7 @@ def create_data_loader(
     action_dim: int = 7,
     target_action_dim: int | None = None,
     seed: int = 42,
+    norm_stats_path: str | pathlib.Path | None = None,
 ) -> Iterator[dict[str, Any]]:
     """
     Create a LIBERO data loader.
@@ -189,6 +190,10 @@ def create_data_loader(
         action_dim: Raw action dimension (7 for LIBERO).
         target_action_dim: Pad actions to this dimension (32 for pi0.5).
         seed: Random seed for shuffling.
+        norm_stats_path: Path to norm_stats.json used for state quantile
+            normalization. Should point at the base checkpoint's assets so
+            state is normalized into the [-1, 1] quantile space the frozen
+            pi0.5 teacher was trained on. Falls back to dataset_path/norm_stats.json.
     """
     dataset_path = pathlib.Path(dataset_path)
     meta_dir = dataset_path / "meta"
@@ -206,17 +211,36 @@ def create_data_loader(
     logger.info(f"Loaded {len(episodes)} episodes, {len(tasks)} tasks")
 
     # ── norm stats ──
-    norm_stats_path = dataset_path / "norm_stats.json"
-    if norm_stats_path.exists():
-        with open(norm_stats_path) as f:
+    # Prefer the checkpoint's norm_stats (correct 8-dim state stats) over the
+    # dataset's (which may be partial). The frozen pi0.5 teacher expects state
+    # in quantile-normalized [-1, 1] space; feeding raw state produces wrong
+    # teacher velocities, so the student learns garbage. See
+    # docs/training-debug.md §9.
+    norm_stats_file = (
+        pathlib.Path(norm_stats_path) if norm_stats_path else dataset_path / "norm_stats.json"
+    )
+    if norm_stats_file.exists():
+        with open(norm_stats_file) as f:
             raw_stats = json.load(f)
         stats = raw_stats.get("norm_stats", raw_stats)
         action_mean = np.array(stats["actions"]["mean"], dtype=np.float32)
         action_std = np.array(stats["actions"]["std"], dtype=np.float32)
+        state_q01 = np.array(stats["state"]["q01"], dtype=np.float32)
+        state_q99 = np.array(stats["state"]["q99"], dtype=np.float32)
+        logger.info(
+            f"Loaded norm_stats from {norm_stats_file} "
+            f"(state q01/q99 dim={state_q01.shape[-1]}); "
+            "applying quantile normalization to state"
+        )
     else:
-        logger.warning(f"No norm_stats.json at {norm_stats_path}, using identity norm")
+        logger.warning(
+            f"No norm_stats.json at {norm_stats_file}, "
+            "using identity norm (state NOT normalized!)"
+        )
         action_mean = np.zeros(action_dim, dtype=np.float32)
         action_std = np.ones(action_dim, dtype=np.float32)
+        state_q01 = None
+        state_q99 = None
 
     # ── pad action dim ──
     if target_action_dim is not None and target_action_dim > action_dim:
@@ -354,6 +378,16 @@ def create_data_loader(
                     mode="constant",
                 )
 
+            # Quantile-normalize state into [-1, 1] to match the frozen pi0.5
+            # teacher's training pipeline (Normalize(use_quantiles=True)).
+            raw_state = np.stack(states, axis=0).astype(np.float32)
+            if state_q01 is not None and state_q99 is not None:
+                q01 = state_q01[..., : raw_state.shape[-1]]
+                q99 = state_q99[..., : raw_state.shape[-1]]
+                norm_state = (raw_state - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+            else:
+                norm_state = raw_state
+
             batch = {
                 "observation": {
                     "image": {
@@ -366,7 +400,7 @@ def create_data_loader(
                         "left_wrist_0_rgb": np.ones(batch_size, dtype=bool),
                         "right_wrist_0_rgb": np.zeros(batch_size, dtype=bool),
                     },
-                    "state": np.stack(states, axis=0).astype(np.float32),
+                    "state": norm_state,
                 },
                 "actions": actions_arr,
                 "action_mean": action_mean,

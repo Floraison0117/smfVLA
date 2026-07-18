@@ -54,11 +54,18 @@ def compute_dmf_loss(
     p_mean_r: float = -1.2,
     p_std_r: float = 1.0,
     use_logvar: bool = True,
+    time_sampling: str = "uniform",
 ) -> Tuple[jax.Array, Dict]:
     """Compute DMF loss = 0.5 * (L_FM + L_MF).
 
     model_fn signature: (params, obs, noisy_actions, t[B], r[B], return_logvar=bool)
                         -> u[B,H,D]  or  (u[B,H,D], logvar[B])
+
+    time_sampling:
+        "uniform" — t~U(0,1), r~U(0,t). Covers full [0,1] interval range
+                    including the 1-NFE case (interval=1.0). Matches SMF.
+        "logit_normal" — original logit-normal sampling (may not cover
+                         large intervals needed for 1-NFE inference).
     """
     batch_size = actions.shape[0]
 
@@ -72,12 +79,17 @@ def compute_dmf_loss(
         return t.reshape(batch_size, 1, 1)
 
     # ── Time sampling ──
-    rng, fm_rng, l1_rng, l2_rng = jax.random.split(rng, 4)
-    t_fm = ln_sampler(fm_rng, (batch_size,), p_mean, p_std)
-    ln_1 = ln_sampler(l1_rng, (batch_size,), p_mean_t, p_std_t)
-    ln_2 = ln_sampler(l2_rng, (batch_size,), p_mean_r, p_std_r)
-    t_mf = jnp.maximum(ln_1, ln_2)
-    r_mf = jnp.minimum(ln_1, ln_2)
+    rng, fm_rng, t_rng, r_rng = jax.random.split(rng, 4)
+    if time_sampling == "uniform":
+        t_fm = jax.random.uniform(fm_rng, (batch_size,), minval=0.0, maxval=1.0)
+        t_mf = jax.random.uniform(t_rng, (batch_size,), minval=0.0, maxval=1.0)
+        r_mf = jax.random.uniform(r_rng, (batch_size,), minval=0.0, maxval=1.0) * t_mf
+    else:
+        t_fm = ln_sampler(fm_rng, (batch_size,), p_mean, p_std)
+        ln_1 = ln_sampler(t_rng, (batch_size,), p_mean_t, p_std_t)
+        ln_2 = ln_sampler(r_rng, (batch_size,), p_mean_r, p_std_r)
+        t_mf = jnp.maximum(ln_1, ln_2)
+        r_mf = jnp.minimum(ln_1, ln_2)
 
     # ── 1. Flow Matching branch ──
     z_t_fm = (1 - _bc(t_fm)) * x_0 + _bc(t_fm) * eps

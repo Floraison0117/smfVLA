@@ -22,6 +22,9 @@ def setup_paths():
     paths = [
         str(PROJECT_ROOT / "dmf" / "src"),
         str(PROJECT_ROOT / "piflow" / "src"),
+        str(PROJECT_ROOT / "smfVLA" / "src"),
+        str(PROJECT_ROOT / "snapflow" / "src"),
+        str(PROJECT_ROOT / "freeflow" / "src"),
         str(OPENPI_DIR / "src"),
         str(OPENPI_DIR / "packages" / "openpi-client" / "src"),
     ]
@@ -46,15 +49,25 @@ def quat2axisangle(quat):
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
 
 
-def build_result_json(config_dict, task_results, episode_details, all_latencies,
-                      total_successes, total_episodes, start_time, end_time):
+def build_result_json(
+    config_dict,
+    task_results,
+    episode_details,
+    all_latencies,
+    total_successes,
+    total_episodes,
+    start_time,
+    end_time,
+):
     """构建结构化结果 JSON。"""
     latencies_arr = np.array(all_latencies) if all_latencies else np.array([0.0])
     duration = end_time - start_time
 
     return {
         "overall": {
-            "total_success_rate": round(total_successes / total_episodes, 4) if total_episodes > 0 else 0.0,
+            "total_success_rate": (
+                round(total_successes / total_episodes, 4) if total_episodes > 0 else 0.0
+            ),
             "total_episodes": total_episodes,
             "total_successes": total_successes,
         },

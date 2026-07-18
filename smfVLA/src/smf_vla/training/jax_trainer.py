@@ -254,7 +254,27 @@ class SMFTrainer:
             action_mean = batch["action_mean"]
             action_std = batch["action_std"]
 
-            # ── 跳过 embed_prefix，只处理 suffix tokens ─────────
+            # ── model_fn: KV-cache split（prefix 只算一次，4 次前向共享）────────
+            # 之前的 suffix-only ([None, suffix_tokens]) 写法丢弃了 prefix，导致 action
+            # token 无法 attend 到 image/language —— 模型无法依赖观测，是严重正确性 bug。
+            # 现采用与 model.sample_actions 完全一致的 KV-cache 模式（见 pi05_smf.py）：
+            # prefix 前向一次得到 kv_cache（stop_gradient，frozen VLM 不进 grad），
+            # model_fn 做 suffix-only 前向复用 kv_cache。数学上与完整前向等价，但 prefix
+            # 只算一次（见 docs/training-debug.md §2/§7）。
+            prefix_tokens, prefix_mask, prefix_ar_mask = model.embed_prefix(observation)
+            prefix_tokens = jax.lax.stop_gradient(prefix_tokens)
+            prefix_mask = jax.lax.stop_gradient(prefix_mask)
+            prefix_ar_mask = jax.lax.stop_gradient(prefix_ar_mask)
+            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+            prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+            (_, _), kv_cache = model.PaliGemma.llm(
+                [prefix_tokens, None],
+                mask=prefix_attn_mask,
+                positions=prefix_positions,
+            )
+            batch_size = prefix_mask.shape[0]
+            prefix_len = prefix_mask.shape[1]
+
             def model_fn(params, obs, noisy_actions, r, t):
                 if trainer.time_conditioning == "decte":
                     suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = model.embed_suffix_decte(
@@ -266,13 +286,22 @@ class SMFTrainer:
                     )
                 adarms_cond = [None, adarms_cond]
 
-                suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-                positions = jnp.cumsum(suffix_mask, axis=1) - 1
+                # suffix-only 前向，复用 prefix 的 kv_cache
+                suffix_len = suffix_mask.shape[1]
+                suffix_causal_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+                # suffix 可 attend 全部 prefix（全 1）+ causal 自身
+                prefix_to_suffix_attn = jnp.ones((batch_size, suffix_len, prefix_len), dtype=jnp.bool_)
+                full_attn_mask = jnp.concatenate([prefix_to_suffix_attn, suffix_causal_mask], axis=2)
+                # suffix 全局位置接在 prefix 之后（与 sample_actions 一致，避免 train/infer 位置 mismatch）
+                suffix_positions = (
+                    jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=1) - 1
+                )
 
                 (_, suffix_out), _ = model.PaliGemma.llm(
                     [None, suffix_tokens],
-                    mask=suffix_attn_mask,
-                    positions=positions,
+                    mask=full_attn_mask,
+                    positions=suffix_positions,
+                    kv_cache=kv_cache,
                     adarms_cond=adarms_cond,
                 )
                 v = model.action_out_proj(suffix_out[:, -model.action_horizon:])

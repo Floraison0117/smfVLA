@@ -178,12 +178,27 @@ def main():
     dataset_path = config.get("dataset_path", "")
     if Path(dataset_path).exists():
         logger.info(f"Using dataset: {dataset_path}")
+        # Resolve the base checkpoint's norm_stats.json so the frozen pi0.5
+        # teacher receives state in the quantile-normalized [-1, 1] space it
+        # was trained on (the dataset's own norm_stats may be partial). See
+        # docs/training-debug.md §9.
+        norm_stats_path = None
+        ckpt_assets = list(Path(config["checkpoint"]).rglob("norm_stats.json"))
+        if ckpt_assets:
+            norm_stats_path = str(ckpt_assets[0])
+            logger.info(f"Using checkpoint norm_stats for state normalization: {norm_stats_path}")
+        else:
+            logger.warning(
+                "No norm_stats.json found under checkpoint; "
+                "state will NOT be quantile-normalized"
+            )
         data_loader = create_data_loader(
             dataset_path=dataset_path,
             batch_size=config["batch_size"],
             action_horizon=config["action_horizon"],
             action_dim=config.get("action_dim_raw", config["action_dim"]),
             target_action_dim=config["action_dim"],
+            norm_stats_path=norm_stats_path,
         )
     else:
         logger.warning(f"Dataset not found: {dataset_path}, using fake data for smoke test")
